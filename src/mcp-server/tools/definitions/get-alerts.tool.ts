@@ -118,7 +118,9 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
         if (alert.validFrom) lines.push(`**Valid From:** ${alert.validFrom}`);
         if (alert.validTo) lines.push(`**Valid To:** ${alert.validTo}`);
         lines.push('');
+        lines.push('```');
         lines.push(alert.message);
+        lines.push('```');
       }
     }
     return [{ type: 'text', text: lines.join('\n') }];
