@@ -106,22 +106,10 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       retryable: true,
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
     },
-    {
-      reason: 'invalid_window',
-      code: JsonRpcErrorCode.InvalidParams,
-      when: 'window_hours is outside the allowed range 1–168.',
-      recovery: 'Use a window_hours value between 1 and 168.',
-    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Fetching solar wind data', { window_hours: input.window_hours });
-    if (input.window_hours < 1 || input.window_hours > 168) {
-      throw ctx.fail('invalid_window', `window_hours must be 1–168, got ${input.window_hours}`, {
-        ...ctx.recoveryFor('invalid_window'),
-      });
-    }
-
     const svc = getSpaceWeatherService();
     const [allPlasma, allMag] = await Promise.all([
       svc.getSolarWindPlasma(ctx),

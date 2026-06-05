@@ -433,7 +433,7 @@ export class SpaceWeatherService {
     const raw = await fetchFeed<RawSolarRegion[]>('/json/solar_regions.json', ctx);
     // The feed contains ~30 days of region history in reverse-chrono order.
     // Filter to the most recent observed_date to return only currently active regions.
-    const mostRecentDate = raw.length > 0 ? raw[0]!.observed_date : null;
+    const mostRecentDate = raw.length > 0 ? raw[0]?.observed_date : null;
     return raw
       .filter((r) => r.location != null && r.observed_date === mostRecentDate) // most recent date only, skip tombstones
       .map((r) => {

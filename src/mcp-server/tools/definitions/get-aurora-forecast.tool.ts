@@ -124,8 +124,8 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
 
   async handler(input, ctx) {
     // Validate: if one coordinate is provided, the other must be too
-    const hasLat = input.latitude != null && input.latitude !== undefined;
-    const hasLon = input.longitude != null && input.longitude !== undefined;
+    const hasLat = input.latitude != null;
+    const hasLon = input.longitude != null;
     if ((hasLat && !hasLon) || (!hasLat && hasLon)) {
       throw ctx.fail('invalid_coordinates', 'Provide both latitude and longitude, or neither.', {
         ...ctx.recoveryFor('invalid_coordinates'),

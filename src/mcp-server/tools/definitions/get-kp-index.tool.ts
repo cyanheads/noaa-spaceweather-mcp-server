@@ -73,22 +73,10 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
       retryable: true,
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
     },
-    {
-      reason: 'invalid_window',
-      code: JsonRpcErrorCode.InvalidParams,
-      when: 'window_days is outside the allowed range 1–7.',
-      recovery: 'Use a window_days value between 1 and 7.',
-    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Fetching Kp index', { window_days: input.window_days });
-    if (input.window_days < 1 || input.window_days > 7) {
-      throw ctx.fail('invalid_window', `window_days must be 1–7, got ${input.window_days}`, {
-        ...ctx.recoveryFor('invalid_window'),
-      });
-    }
-
     const svc = getSpaceWeatherService();
     const [allObs, forecast] = await Promise.all([svc.getKpObserved(ctx), svc.getKpForecast(ctx)]);
 

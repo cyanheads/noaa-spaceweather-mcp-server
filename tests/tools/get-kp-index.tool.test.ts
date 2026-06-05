@@ -3,7 +3,6 @@
  * @module tests/tools/get-kp-index.tool.test
  */
 
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KpForecast, KpObservation } from '@/services/space-weather/types.js';
@@ -104,20 +103,10 @@ describe('getKpIndex', () => {
     expect(result.observed.length).toBe(result.observedCount);
   });
 
-  it('throws invalid_window for window_days out of range', async () => {
-    const svc = {
-      getKpObserved: vi.fn().mockResolvedValue([]),
-      getKpForecast: vi.fn().mockResolvedValue([]),
-    };
-    mockGetSpaceWeatherService.mockReturnValue(svc as never);
-
-    const ctx = createMockContext({ errors: getKpIndex.errors });
-    // Bypass Zod validation to test the handler guard
-    const input = { window_days: 0 } as Parameters<typeof getKpIndex.handler>[0];
-    await expect(getKpIndex.handler(input, ctx)).rejects.toMatchObject({
-      code: JsonRpcErrorCode.InvalidParams,
-      data: { reason: 'invalid_window' },
-    });
+  it('rejects window_days out of range via Zod validation', () => {
+    // window_days is constrained to 1–7 by .min(1).max(7); Zod throws before the handler runs.
+    expect(() => getKpIndex.input.parse({ window_days: 0 })).toThrow();
+    expect(() => getKpIndex.input.parse({ window_days: 8 })).toThrow();
   });
 
   it('defaults currentKp to 0 when no observations in window', async () => {

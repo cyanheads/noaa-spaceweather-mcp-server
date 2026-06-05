@@ -3,7 +3,6 @@
  * @module tests/tools/get-solar-wind.tool.test
  */
 
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SolarWindMag, SolarWindPlasma } from '@/services/space-weather/types.js';
@@ -108,19 +107,10 @@ describe('getSolarWind', () => {
     expect(result.bzStatus).toMatch(/unavailable/i);
   });
 
-  it('throws invalid_window for out-of-range window_hours', async () => {
-    const svc = {
-      getSolarWindPlasma: vi.fn().mockResolvedValue([]),
-      getSolarWindMag: vi.fn().mockResolvedValue([]),
-    };
-    mockGetSpaceWeatherService.mockReturnValue(svc as never);
-
-    const ctx = createMockContext({ errors: getSolarWind.errors });
-    const input = { window_hours: 200 } as Parameters<typeof getSolarWind.handler>[0];
-    await expect(getSolarWind.handler(input, ctx)).rejects.toMatchObject({
-      code: JsonRpcErrorCode.InvalidParams,
-      data: { reason: 'invalid_window' },
-    });
+  it('rejects window_hours out of range via Zod validation', () => {
+    // window_hours is constrained to 1–168 by .min(1).max(168); Zod throws before the handler runs.
+    expect(() => getSolarWind.input.parse({ window_hours: 0 })).toThrow();
+    expect(() => getSolarWind.input.parse({ window_hours: 200 })).toThrow();
   });
 
   it('correctly windows records — service normalizes SWPC time tags to ISO 8601 UTC', async () => {

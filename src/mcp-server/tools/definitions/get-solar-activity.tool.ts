@@ -128,19 +128,12 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     ctx.log.info('Fetching solar activity', { include_regions: input.include_regions });
     const svc = getSpaceWeatherService();
 
-    const fetches: [
-      Promise<Awaited<ReturnType<typeof svc.getXrayFlux>>>,
-      Promise<Awaited<ReturnType<typeof svc.getSolarProbabilities>>>,
-      Promise<Awaited<ReturnType<typeof svc.getProtonFlux>>>,
-      Promise<Awaited<ReturnType<typeof svc.getSolarRegions>> | null>,
-    ] = [
+    const [xray, probs, protons, regions] = await Promise.all([
       svc.getXrayFlux(ctx),
       svc.getSolarProbabilities(ctx),
       svc.getProtonFlux(ctx),
       input.include_regions ? svc.getSolarRegions(ctx) : Promise.resolve(null),
-    ];
-
-    const [xray, probs, protons, regions] = await Promise.all(fetches);
+    ]);
 
     // Latest X-ray
     const latestXrayRaw = xray.length > 0 ? xray[xray.length - 1] : null;
