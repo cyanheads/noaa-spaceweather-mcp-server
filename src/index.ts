@@ -5,17 +5,21 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
-import { echoPrompt } from './mcp-server/prompts/definitions/echo.prompt.js';
-import { echoResource } from './mcp-server/resources/definitions/echo.resource.js';
-import { echoAppUiResource } from './mcp-server/resources/definitions/echo-app-ui.app-resource.js';
-import { echoTool } from './mcp-server/tools/definitions/echo.tool.js';
-import { echoAppTool } from './mcp-server/tools/definitions/echo-app.app-tool.js';
+import { allToolDefinitions } from './mcp-server/tools/definitions/index.js';
+import { initSpaceWeatherService } from './services/space-weather/space-weather-service.js';
 
 await createApp({
-  tools: [echoTool, echoAppTool],
-  resources: [echoResource, echoAppUiResource],
-  prompts: [echoPrompt],
-  // instructions: 'Server-level orientation forwarded to the model on every initialize.\n' +
-  //   '- Use shortcut `X` for the most common case\n' +
-  //   '- Tools require auth via the `inventory:read` scope',
+  tools: allToolDefinitions,
+  resources: [],
+  prompts: [],
+  instructions:
+    'NOAA Space Weather Prediction Center data server — all feeds are public and keyless.\n' +
+    '- Start with noaa_spaceweather_get_conditions for a quick status snapshot.\n' +
+    '- Use noaa_spaceweather_get_aurora_forecast with coordinates for "can I see the aurora?" queries.\n' +
+    '- Use noaa_spaceweather_get_solar_wind for Bz monitoring (southward Bz drives storms).\n' +
+    '- Use noaa_spaceweather_get_alerts for active SWPC watches/warnings.\n' +
+    'Feeds update frequently (solar wind ~1 min, aurora ~5 min, Kp 3-hour intervals).',
+  setup(core) {
+    initSpaceWeatherService(core.config, core.storage);
+  },
 });

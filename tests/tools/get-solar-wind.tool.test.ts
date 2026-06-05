@@ -1,0 +1,150 @@
+/**
+ * @fileoverview Tests for the noaa_spaceweather_get_solar_wind tool.
+ * @module tests/tools/get-solar-wind.tool.test
+ */
+
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SolarWindMag, SolarWindPlasma } from '@/services/space-weather/types.js';
+
+vi.mock('@/services/space-weather/space-weather-service.js', () => ({
+  getSpaceWeatherService: vi.fn(),
+}));
+
+import { getSolarWind } from '@/mcp-server/tools/definitions/get-solar-wind.tool.js';
+import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
+
+const mockGetSpaceWeatherService = vi.mocked(getSpaceWeatherService);
+
+function makePlasmaReading(hoursAgo: number, speed = 450): SolarWindPlasma {
+  return {
+    timeTag: new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString(),
+    densityPerCm3: 5.2,
+    speedKmS: speed,
+    temperatureK: 80000,
+  };
+}
+
+function makeMagReading(hoursAgo: number, bz = -5): SolarWindMag {
+  return {
+    timeTag: new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString(),
+    bxGsm: 2,
+    byGsm: -1,
+    bzGsm: bz,
+    bt: Math.sqrt(bz * bz + 4 + 1),
+  };
+}
+
+describe('getSolarWind', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('returns plasma and mag series within default 3-hour window', async () => {
+    const plasmaData = [
+      makePlasmaReading(5), // outside default window
+      makePlasmaReading(2), // inside
+      makePlasmaReading(1), // inside
+    ];
+    const magData = [
+      makeMagReading(5), // outside
+      makeMagReading(2), // inside
+      makeMagReading(1), // inside
+    ];
+    const svc = {
+      getSolarWindPlasma: vi.fn().mockResolvedValue(plasmaData),
+      getSolarWindMag: vi.fn().mockResolvedValue(magData),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = getSolarWind.input.parse({ window_hours: 3 });
+    const result = await getSolarWind.handler(input, ctx);
+
+    expect(result.plasmaCount).toBe(2);
+    expect(result.magCount).toBe(2);
+    expect(result.latestPlasma).not.toBeNull();
+    expect(result.latestPlasma!.speedKmS).toBe(450);
+    expect(result.latestMag).not.toBeNull();
+  });
+
+  it('derives bzStatus from the latest Bz reading', async () => {
+    // Southward Bz driving storm conditions
+    const svc = {
+      getSolarWindPlasma: vi.fn().mockResolvedValue([makePlasmaReading(1)]),
+      getSolarWindMag: vi.fn().mockResolvedValue([makeMagReading(1, -15)]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = getSolarWind.input.parse({ window_hours: 3 });
+    const result = await getSolarWind.handler(input, ctx);
+
+    expect(result.bzStatus).toContain('-15');
+    expect(result.bzStatus).toMatch(/storm-driving/i);
+  });
+
+  it('handles fill-value null fields in plasma records (sparse upstream)', async () => {
+    const sparseReading: SolarWindPlasma = {
+      timeTag: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      densityPerCm3: null, // fill-value omitted by service
+      speedKmS: null,
+      temperatureK: null,
+    };
+    const svc = {
+      getSolarWindPlasma: vi.fn().mockResolvedValue([sparseReading]),
+      getSolarWindMag: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = getSolarWind.input.parse({ window_hours: 3 });
+    const result = await getSolarWind.handler(input, ctx);
+
+    expect(result.latestPlasma).not.toBeNull();
+    expect(result.latestPlasma!.speedKmS).toBeNull();
+    expect(result.latestPlasma!.densityPerCm3).toBeNull();
+    expect(result.bzStatus).toMatch(/unavailable/i);
+  });
+
+  it('throws invalid_window for out-of-range window_hours', async () => {
+    const svc = {
+      getSolarWindPlasma: vi.fn().mockResolvedValue([]),
+      getSolarWindMag: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = { window_hours: 200 } as Parameters<typeof getSolarWind.handler>[0];
+    await expect(getSolarWind.handler(input, ctx)).rejects.toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_window' },
+    });
+  });
+
+  it('formats output with Bz status and series', () => {
+    const output = {
+      plasma: [
+        { timeTag: '2026-06-04T14:00:00Z', densityPerCm3: 5.2, speedKmS: 450, temperatureK: 80000 },
+      ],
+      mag: [{ timeTag: '2026-06-04T14:00:00Z', bxGsm: 2, byGsm: -1, bzGsm: -15, bt: 15.2 }],
+      latestPlasma: {
+        timeTag: '2026-06-04T14:00:00Z',
+        densityPerCm3: 5.2,
+        speedKmS: 450,
+        temperatureK: 80000,
+      },
+      latestMag: { timeTag: '2026-06-04T14:00:00Z', bxGsm: 2, byGsm: -1, bzGsm: -15, bt: 15.2 },
+      bzStatus: 'Southward Bz -15 nT — storm-driving conditions.',
+      plasmaCount: 1,
+      magCount: 1,
+    };
+    const blocks = getSolarWind.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('Southward Bz -15');
+    expect(text).toContain('450 km/s');
+    expect(text).toContain('5.2 n/cm³');
+    expect(text).toContain('Bz (GSM): -15 nT');
+  });
+});

@@ -1,0 +1,174 @@
+/**
+ * @fileoverview Tests for the noaa_spaceweather_get_kp_index tool.
+ * @module tests/tools/get-kp-index.tool.test
+ */
+
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { KpForecast, KpObservation } from '@/services/space-weather/types.js';
+
+vi.mock('@/services/space-weather/space-weather-service.js', () => ({
+  getSpaceWeatherService: vi.fn(),
+}));
+
+import { getKpIndex } from '@/mcp-server/tools/definitions/get-kp-index.tool.js';
+import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
+
+const mockGetSpaceWeatherService = vi.mocked(getSpaceWeatherService);
+
+/** Build Kp observation records spanning the last N hours. */
+function makeObservations(count: number, baseKp = 3): KpObservation[] {
+  const now = new Date();
+  return Array.from({ length: count }, (_, i) => {
+    const t = new Date(now.getTime() - (count - i) * 3 * 60 * 60 * 1000);
+    const kp = baseKp + (i % 3);
+    return {
+      timeTag: t.toISOString(),
+      kp,
+      gScale: kp >= 5 ? 1 : 0,
+      auroraLatitude:
+        kp >= 5
+          ? 'Aurora possible to ~60° geomagnetic latitude'
+          : 'No significant aurora expected at mid-latitudes',
+      aRunning: null,
+      stationCount: 10,
+    };
+  });
+}
+
+function makeForecasts(): KpForecast[] {
+  const now = new Date();
+  return Array.from({ length: 8 }, (_, i) => ({
+    timeTag: new Date(now.getTime() + i * 3 * 60 * 60 * 1000).toISOString(),
+    kp: 2 + i * 0.5,
+    observed: i === 0 ? 'observed' : 'predicted',
+    noaaScale: i >= 2 ? 'G1' : null,
+  }));
+}
+
+describe('getKpIndex', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('returns observed + forecast within window_days=1 (default)', async () => {
+    const observations = makeObservations(8, 3);
+    const forecasts = makeForecasts();
+    const svc = {
+      getKpObserved: vi.fn().mockResolvedValue(observations),
+      getKpForecast: vi.fn().mockResolvedValue(forecasts),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getKpIndex.errors });
+    const input = getKpIndex.input.parse({ window_days: 1 });
+    const result = await getKpIndex.handler(input, ctx);
+
+    expect(result.observed.length).toBeGreaterThan(0);
+    expect(result.forecast).toHaveLength(forecasts.length);
+    expect(result.currentKp).toBeGreaterThanOrEqual(0);
+    expect(result.currentGScale).toBeGreaterThanOrEqual(0);
+    expect(result.observedCount).toBe(result.observed.length);
+    // gLabel must be derived from gScale
+    for (const r of result.observed) {
+      expect(r.gLabel).toBe(`G${r.gScale}`);
+    }
+  });
+
+  it('extends window to 7 days when requested', async () => {
+    // Put observations spread over 7 days
+    const observations = Array.from({ length: 56 }, (_, i) => {
+      const t = new Date(Date.now() - i * 3 * 60 * 60 * 1000);
+      return {
+        timeTag: t.toISOString(),
+        kp: 2,
+        gScale: 0,
+        auroraLatitude: 'No significant aurora expected at mid-latitudes',
+        aRunning: null,
+        stationCount: 10,
+      };
+    });
+    const svc = {
+      getKpObserved: vi.fn().mockResolvedValue(observations),
+      getKpForecast: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getKpIndex.errors });
+    const input = getKpIndex.input.parse({ window_days: 7 });
+    const result = await getKpIndex.handler(input, ctx);
+
+    // Should return more observations for 7 days vs 1 day
+    expect(result.observedCount).toBeGreaterThan(0);
+    expect(result.observed.length).toBe(result.observedCount);
+  });
+
+  it('throws invalid_window for window_days out of range', async () => {
+    const svc = {
+      getKpObserved: vi.fn().mockResolvedValue([]),
+      getKpForecast: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getKpIndex.errors });
+    // Bypass Zod validation to test the handler guard
+    const input = { window_days: 0 } as Parameters<typeof getKpIndex.handler>[0];
+    await expect(getKpIndex.handler(input, ctx)).rejects.toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_window' },
+    });
+  });
+
+  it('defaults currentKp to 0 when no observations in window', async () => {
+    // All observations older than the window
+    const oldObservation = {
+      timeTag: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+      kp: 5,
+      gScale: 1,
+      auroraLatitude: 'Aurora possible to ~60° geomagnetic latitude',
+      aRunning: null,
+      stationCount: 10,
+    };
+    const svc = {
+      getKpObserved: vi.fn().mockResolvedValue([oldObservation]),
+      getKpForecast: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getKpIndex.errors });
+    const input = getKpIndex.input.parse({ window_days: 1 });
+    const result = await getKpIndex.handler(input, ctx);
+
+    expect(result.observedCount).toBe(0);
+    expect(result.currentKp).toBe(0);
+    expect(result.currentGScale).toBe(0);
+  });
+
+  it('formats output with Kp header and both series', () => {
+    const output = {
+      observed: [
+        {
+          timeTag: '2026-06-04T12:00:00Z',
+          kp: 5,
+          gScale: 1,
+          gLabel: 'G1',
+          auroraLatitude: 'Aurora possible to ~60° geomagnetic latitude',
+        },
+      ],
+      forecast: [
+        { timeTag: '2026-06-04T15:00:00Z', kp: 3, observed: 'predicted', noaaScale: null },
+      ],
+      currentKp: 5,
+      currentGScale: 1,
+      auroraLatitude: 'Aurora possible to ~60° geomagnetic latitude',
+      observedCount: 1,
+    };
+    const blocks = getKpIndex.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('Kp 5');
+    expect(text).toContain('G1');
+    expect(text).toContain('3-Day Forecast');
+    expect(text).toContain('Aurora possible to ~60°');
+  });
+});
