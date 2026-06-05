@@ -11,19 +11,6 @@
 
 ---
 
-## First Session
-
-This project was just scaffolded with `bunx @cyanheads/mcp-ts-core init`. You're holding a production-grade MCP framework with the hard parts already solved — error handling, telemetry, auth, transport, validation, lifecycle. What's missing is the **domain**. Your job: design the tool, resource, and service surface with the user, then implement it as small pure handlers that throw — the framework catches, classifies, and instruments the rest. Design before code; the user's first messages set direction, so wait for them before scaffolding definitions.
-
-> **Remove this section** from CLAUDE.md / AGENTS.md after completing these steps. The skills and conventions below remain — this block is one-time onboarding only.
-
-1. **Get your bearings.** Take stock of the project tree, the skills in `skills/`, and the tools/MCP servers available. Light tool use is fine for context-building — you're mapping the territory, not committing yet.
-2. **Read the framework docs** — `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` (builders, Context, errors, exports, conventions)
-3. **Run the `setup` skill** — read `skills/setup/SKILL.md` and follow its checklist (project orientation, agent protocol file selection, echo definition cleanup, skill sync)
-4. **Design the server** — read `skills/design-mcp-server/SKILL.md` and work through it with the user to map the domain into tools, resources, and services before scaffolding
-
----
-
 ## What's Next?
 
 When the user asks what's next or needs direction, suggest options based on the current project state. Common next steps:
@@ -61,100 +48,50 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
-  annotations: { readOnlyHint: true },
-  input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
-  }),
+export const getConditions = tool('noaa_spaceweather_get_conditions', {
+  description: 'Current space-weather snapshot: NOAA R/S/G storm scales (today + 3-day forecast), latest Kp index, and a plain-language status summary.',
+  annotations: { readOnlyHint: true, openWorldHint: true },
+  input: z.object({}),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    observed_time: z.string().describe('Timestamp of the most recent data update (ISO 8601 UTC)'),
+    status_summary: z.string().describe('Plain-language summary of current conditions'),
+    current_kp: z.number().describe('Current planetary K-index (0–9)'),
+    geomagnetic: z.object({
+      scale: z.number().describe('Current G-scale level (0–5)'),
+      text: z.string().describe('G-scale descriptor and aurora-latitude guidance'),
+    }).describe('Current geomagnetic storm level'),
+    // ... additional fields
   }),
-  auth: ['inventory:read'],
 
-  async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+  errors: [
+    {
+      reason: 'feed_unavailable',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'SWPC endpoint returns non-OK or times out',
+      recovery: 'Retry in 30–60 s; SWPC feeds occasionally lag during high-activity events.',
+    },
+  ],
+
+  async handler(_input, ctx) {
+    const svc = getSpaceWeatherService();
+    const [scales, kpObserved] = await Promise.all([
+      svc.getNoaaScales(),
+      svc.getKpObserved(1),
+    ]);
+    ctx.log.info('Conditions fetched', { kp: kpObserved[0]?.kp });
+    return buildConditionsResponse(scales, kpObserved);
   },
 
-  // format() populates content[] — the markdown twin of structuredContent.
-  // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
   format: (result) => [{
     type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
+    text: `**Space Weather Status** — ${result.observed_time}\n\n${result.status_summary}`,
   }],
 });
 ```
 
-### Resource
-
-```ts
-import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
-
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
-  },
-});
-```
-
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
-  }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
-  ],
-});
-```
-
-### Server config
-
-```ts
-// src/config/server-config.ts — lazy-parsed, separate from framework config
-import { z } from '@cyanheads/mcp-ts-core';
-import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
-
-const ServerConfigSchema = z.object({
-  apiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
-});
-
-let _config: z.infer<typeof ServerConfigSchema> | undefined;
-export function getServerConfig() {
-  _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'MY_API_KEY',
-    maxResults: 'MY_MAX_RESULTS',
-  });
-  return _config;
-}
-```
-
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
-
 ### Server instructions
 
-`createApp({ instructions })` — optional server-level orientation, sent to clients on every `initialize` as session-level context. Use it for deployment guidance (connection aliases, regional notes, scope hints) instead of repeating the same context across tool descriptions. Client adoption is uneven, but there's no downside when set.
+`createApp({ instructions })` — this server sets server-level orientation for SWPC feed guidance (start with `get_conditions`, use `get_solar_wind` for Bz monitoring, feed cadences). Sent on every `initialize`; client adoption varies.
 
 ---
 
@@ -165,11 +102,10 @@ Handlers receive a unified `ctx` object. Key properties:
 | Property | Description |
 |:---------|:------------|
 | `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
-| `ctx.elicit` | Ask user for structured input. **Check for presence first:** `if (ctx.elicit) { ... }` |
-| `ctx.sample` | Request LLM completion from the client. **Check for presence first:** `if (ctx.sample) { ... }` |
+| `ctx.fail` | Typed error thrower — `ctx.fail('reason', message, opts?)` maps to declared `errors[]` contract. |
+| `ctx.enrich` | Attach advisory notices to a successful response — `ctx.enrich.notice(title, text)`. |
+| `ctx.recoveryFor` | Spread into an error options object to attach the declared recovery hint: `...ctx.recoveryFor('reason')`. |
 | `ctx.signal` | `AbortSignal` for cancellation. |
-| `ctx.progress` | Task progress (present when `task: true`) — `.setTotal(n)`, `.increment()`, `.update(message)`. |
 | `ctx.requestId` | Unique request ID. |
 | `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
 
@@ -224,19 +160,19 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 ```text
 src/
   index.ts                              # createApp() entry point
-  config/
-    server-config.ts                    # Server-specific env vars (Zod schema)
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    space-weather/
+      space-weather-service.ts          # NOAA SWPC feed client + normalization
+      types.ts                          # Domain types (KpRecord, ScaleEntry, etc.)
   mcp-server/
     tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
-    resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
+      get-conditions.tool.ts            # noaa_spaceweather_get_conditions
+      get-kp-index.tool.ts              # noaa_spaceweather_get_kp_index
+      get-aurora-forecast.tool.ts       # noaa_spaceweather_get_aurora_forecast
+      get-solar-wind.tool.ts            # noaa_spaceweather_get_solar_wind
+      get-solar-activity.tool.ts        # noaa_spaceweather_get_solar_activity
+      get-alerts.tool.ts                # noaa_spaceweather_get_alerts
+      index.ts                          # Barrel — allToolDefinitions
 ```
 
 ---
@@ -302,24 +238,24 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 ## Commands
 
-**Runtime:** Scripts use `tsx` — both `npm run <cmd>` and `bun run <cmd>` work. `bun` is slightly faster for script invocation but not required.
+**Runtime:** Scripts use `bun run` — both `npm run <cmd>` and `bun run <cmd>` work.
 
 | Command | Purpose |
 |:--------|:--------|
-| `npm run build` | Compile TypeScript |
-| `npm run rebuild` | Clean + build |
-| `npm run clean` | Remove build artifacts |
-| `npm run devcheck` | Lint + format + typecheck + security + changelog sync |
+| `bun run build` | Compile TypeScript |
+| `bun run rebuild` | Clean + build |
+| `bun run clean` | Remove build artifacts |
+| `bun run devcheck` | Lint + format + typecheck + security + changelog sync |
 | `bun run audit:refresh` | Delete `bun.lock`, reinstall, and re-run `bun audit`. Use when `devcheck` flags a transitive advisory — Bun's `update` is sticky on transitive resolutions, so the advisory may be a stale-lockfile false positive. If it survives the refresh, it's real. |
-| `npm run tree` | Generate directory structure doc |
-| `npm run format` | Auto-fix formatting (safe fixes only) |
-| `npm run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
-| `npm test` | Run tests |
-| `npm run start:stdio` | Production mode (stdio) |
-| `npm run start:http` | Production mode (HTTP) |
-| `npm run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
-| `npm run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
-| `npm run bundle` | Build and pack as `.mcpb` for one-click Claude Desktop install |
+| `bun run tree` | Generate directory structure doc |
+| `bun run format` | Auto-fix formatting (safe fixes only) |
+| `bun run format:unsafe` | Also apply Biome's unsafe autofixes — review the diff; they can change behavior |
+| `bun run test` | Run tests |
+| `bun run start:stdio` | Production mode (stdio) |
+| `bun run start:http` | Production mode (HTTP) |
+| `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
+| `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
+| `bun run bundle` | Build and pack as `.mcpb` for one-click Claude Desktop install |
 
 ---
 

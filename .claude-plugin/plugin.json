@@ -1,17 +1,17 @@
 {
-  "name": "noaa-spaceweather-mcp-server",
+  "name": "@cyanheads/noaa-spaceweather-mcp-server",
   "version": "0.1.0",
-  "description": "",
+  "description": "Query NOAA SWPC space weather: geomagnetic storm scales, Kp index, aurora forecasts, solar wind, solar activity, and alerts via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": ""
+    "name": "cyanheads"
   },
-  "homepage": "",
-  "repository": "",
+  "homepage": "https://github.com/cyanheads/noaa-spaceweather-mcp-server#readme",
+  "repository": "git+https://github.com/cyanheads/noaa-spaceweather-mcp-server.git",
   "license": "Apache-2.0",
   "mcpServers": {
-    "noaa-spaceweather-mcp-server": {
+    "@cyanheads/noaa-spaceweather-mcp-server": {
       "command": "npx",
-      "args": ["-y", "noaa-spaceweather-mcp-server"],
+      "args": ["-y", "@cyanheads/noaa-spaceweather-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio"
       }

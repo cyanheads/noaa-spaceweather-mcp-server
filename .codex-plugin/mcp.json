@@ -1,7 +1,7 @@
 {
-  "noaa-spaceweather-mcp-server": {
+  "@cyanheads/noaa-spaceweather-mcp-server": {
     "command": "npx",
-    "args": ["-y", "noaa-spaceweather-mcp-server"],
+    "args": ["-y", "@cyanheads/noaa-spaceweather-mcp-server"],
     "env": {
       "MCP_TRANSPORT_TYPE": "stdio"
     }
