@@ -129,9 +129,11 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     ]);
 
     const cutoff = new Date();
-    cutoff.setHours(cutoff.getHours() - input.window_hours);
+    cutoff.setTime(cutoff.getTime() - input.window_hours * 3_600_000);
     const cutoffIso = cutoff.toISOString();
 
+    // Service normalizes SWPC space-separated time tags to ISO 8601 UTC ("T"/"Z" form),
+    // so string comparison is safe here.
     const plasma = allPlasma.filter((r) => r.timeTag >= cutoffIso);
     const mag = allMag.filter((r) => r.timeTag >= cutoffIso);
 

@@ -170,6 +170,8 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
           verdict = `Good aurora chance (${pct}%) — Kp≥${minKp} needed at this latitude.`;
         else if (pct >= 5)
           verdict = `Low aurora chance (${pct}%) — conditions marginal. Kp≥${minKp} needed.`;
+        else if (minKp === 0)
+          verdict = `Very low aurora probability (${pct}%) despite favorable latitude — wait for elevated solar activity and higher Kp.`;
         else
           verdict = `Very low aurora probability (${pct}%) at this location. Kp≥${minKp} needed — travel to higher latitudes or wait for elevated Kp.`;
 

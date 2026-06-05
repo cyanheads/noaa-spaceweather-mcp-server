@@ -126,6 +126,19 @@ function parseNum(s: string | number | null | undefined): number | null {
 }
 
 /**
+ * Normalize a SWPC time tag string to ISO 8601 UTC.
+ * SWPC solar-wind feeds use "YYYY-MM-DD HH:MM:SS.mmm" (space-separated, no 'Z').
+ * Without normalization, `new Date(tag)` interprets the string as local time
+ * rather than UTC, corrupting all time-based filtering.
+ */
+function normalizeSwpcTime(tag: string): string {
+  // Replace the space between date and time with 'T' and append 'Z' if absent.
+  if (typeof tag !== 'string' || tag.includes('T')) return tag;
+  const normalized = tag.replace(' ', 'T');
+  return normalized.endsWith('Z') ? normalized : `${normalized}Z`;
+}
+
+/**
  * Normalize array-of-arrays feed (plasma, mag) with a header row.
  * data[0] is string[] field names; data[1..n] are string[] value rows.
  */
@@ -218,27 +231,38 @@ interface RawXrayFlux {
 }
 
 interface RawSolarRegion {
-  area: number;
+  area: number | null;
   c_flare_probability: number | string;
-  latitude: string;
-  location: string;
-  longitude: string;
+  // latitude and longitude are returned as bare integers in the live feed
+  // (e.g. 17, -5), not as heliographic strings like "N17", "S05".
+  // Both can be null in tombstone entries for recently-exited regions.
+  latitude: number | string | null;
+  location: string | null;
+  longitude: number | string | null;
   m_flare_probability: number | string;
-  mag_class: string;
-  number_spots: number;
+  mag_class: string | null;
+  number_spots: number | null;
   observed_date: string;
   proton_probability: number | string;
   region: number;
-  spot_class: string;
+  spot_class: string | null;
   x_flare_probability: number | string;
 }
 
 interface RawSolarProbs {
   '10mev_protons_1_day': number | string;
+  '10mev_protons_2_day'?: number | string;
+  '10mev_protons_3_day'?: number | string;
   c_class_1_day: number | string;
+  c_class_2_day?: number | string;
+  c_class_3_day?: number | string;
   date: string;
   m_class_1_day: number | string;
+  m_class_2_day?: number | string;
+  m_class_3_day?: number | string;
   x_class_1_day: number | string;
+  x_class_2_day?: number | string;
+  x_class_3_day?: number | string;
 }
 
 interface RawProtonFlux {
@@ -352,7 +376,10 @@ export class SpaceWeatherService {
         forecastTime: raw['Forecast Time'] ?? '',
       },
       grid: (raw.coordinates ?? []).map(([lon, lat, aurora]) => ({
-        longitude: lon,
+        // OVATION grid uses 0–360 longitude. Normalize to −180..179 so user
+        // coordinates (WGS84 standard −180..180) map to the same range for
+        // nearest-grid-point search.
+        longitude: lon > 180 ? lon - 360 : lon,
         latitude: lat,
         auroraPercent: aurora,
       })),
@@ -366,7 +393,7 @@ export class SpaceWeatherService {
     const raw = await fetchFeed<string[][]>('/products/solar-wind/plasma-7-day.json', ctx);
     const rows = normalizeArrayOfArrays(raw);
     return rows.map((r) => ({
-      timeTag: r['time_tag'] ?? '',
+      timeTag: normalizeSwpcTime(r['time_tag'] ?? ''),
       densityPerCm3: parseNum(r['density']),
       speedKmS: parseNum(r['speed']),
       temperatureK: parseNum(r['temperature']),
@@ -378,7 +405,7 @@ export class SpaceWeatherService {
     const raw = await fetchFeed<string[][]>('/products/solar-wind/mag-7-day.json', ctx);
     const rows = normalizeArrayOfArrays(raw);
     return rows.map((r) => ({
-      timeTag: r['time_tag'] ?? '',
+      timeTag: normalizeSwpcTime(r['time_tag'] ?? ''),
       bxGsm: parseNum(r['bx_gsm']),
       byGsm: parseNum(r['by_gsm']),
       bzGsm: parseNum(r['bz_gsm']),
@@ -401,34 +428,63 @@ export class SpaceWeatherService {
       }));
   }
 
-  /** Fetch active solar regions. */
+  /** Fetch active solar regions (most recent observed date only). */
   async getSolarRegions(ctx: Context): Promise<SolarRegion[]> {
     const raw = await fetchFeed<RawSolarRegion[]>('/json/solar_regions.json', ctx);
-    return raw.map((r) => ({
-      observedDate: r.observed_date,
-      region: r.region,
-      latitude: r.latitude,
-      location: r.location,
-      spotClass: r.spot_class ?? '',
-      numberSpots: r.number_spots ?? 0,
-      magClass: r.mag_class ?? '',
-      cFlareProbability: parseNum(r.c_flare_probability) ?? 0,
-      mFlareProbability: parseNum(r.m_flare_probability) ?? 0,
-      xFlareProbability: parseNum(r.x_flare_probability) ?? 0,
-      protonProbability: parseNum(r.proton_probability) ?? 0,
-    }));
+    // The feed contains ~30 days of region history in reverse-chrono order.
+    // Filter to the most recent observed_date to return only currently active regions.
+    const mostRecentDate = raw.length > 0 ? raw[0]!.observed_date : null;
+    return raw
+      .filter((r) => r.location != null && r.observed_date === mostRecentDate) // most recent date only, skip tombstones
+      .map((r) => {
+        // latitude is a bare integer in the live feed (e.g. 17, -5).
+        // Normalize to heliographic string ("N17", "S05") to match the declared output type.
+        const latNum = typeof r.latitude === 'number' ? r.latitude : parseFloat(String(r.latitude));
+        const latStr = Number.isFinite(latNum)
+          ? `${latNum >= 0 ? 'N' : 'S'}${String(Math.abs(latNum)).padStart(2, '0')}`
+          : String(r.latitude ?? '');
+        return {
+          observedDate: r.observed_date,
+          region: r.region,
+          latitude: latStr,
+          location: r.location!,
+          spotClass: r.spot_class ?? '',
+          numberSpots: r.number_spots ?? 0,
+          magClass: r.mag_class ?? '',
+          cFlareProbability: parseNum(r.c_flare_probability) ?? 0,
+          mFlareProbability: parseNum(r.m_flare_probability) ?? 0,
+          xFlareProbability: parseNum(r.x_flare_probability) ?? 0,
+          protonProbability: parseNum(r.proton_probability) ?? 0,
+        };
+      });
   }
 
-  /** Fetch solar flare probabilities (3-day). */
+  /** Fetch solar flare probabilities (3-day forward outlook from the latest issued entry). */
   async getSolarProbabilities(ctx: Context): Promise<SolarProbabilities[]> {
     const raw = await fetchFeed<RawSolarProbs[]>('/json/solar_probabilities.json', ctx);
-    return raw.map((r) => ({
-      date: r.date,
-      cClass1Day: parseNum(r.c_class_1_day) ?? 0,
-      mClass1Day: parseNum(r.m_class_1_day) ?? 0,
-      xClass1Day: parseNum(r.x_class_1_day) ?? 0,
-      protons1Day: parseNum(r['10mev_protons_1_day']) ?? 0,
-    }));
+    // The feed is a 30-entry reverse-chrono archive of daily forecasts.
+    // Each entry embeds a 3-day outlook via _1_day / _2_day / _3_day columns.
+    // Take only the most recent entry (index 0) and expand its 3-day outlook
+    // into three records, advancing the date by 0, 1, and 2 days respectively.
+    if (raw.length === 0) return [];
+    const latest = raw[0]!;
+    // Normalize to UTC: the date field is "2026-06-04T00:00:00" without a 'Z',
+    // so new Date() would interpret it as local time. Append 'Z' to force UTC.
+    const rawDate = latest.date.endsWith('Z') ? latest.date : `${latest.date}Z`;
+    const baseDate = new Date(rawDate);
+    return [0, 1, 2].map((dayOffset) => {
+      const d = new Date(baseDate);
+      d.setDate(d.getDate() + dayOffset);
+      const suffix = dayOffset === 0 ? '1_day' : dayOffset === 1 ? '2_day' : '3_day';
+      return {
+        date: d.toISOString(),
+        cClass1Day: parseNum(latest[`c_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0,
+        mClass1Day: parseNum(latest[`m_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0,
+        xClass1Day: parseNum(latest[`x_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0,
+        protons1Day:
+          parseNum(latest[`10mev_protons_${suffix}` as keyof RawSolarProbs] as string) ?? 0,
+      };
+    });
   }
 
   /** Fetch GOES integral proton flux (3-day, ≥10 MeV channel). */
@@ -454,6 +510,13 @@ export class SpaceWeatherService {
     const raw = await fetchFeed<RawAlert[]>('/products/alerts.json', ctx);
     return raw.map((r) => {
       const id = r.product_id ?? '';
+      // The product_id field in the feed is a 4-char abbreviated code (e.g. "K04W").
+      // The full message code (e.g. "WARK04") lives in the message body as:
+      //   "Space Weather Message Code: WARK04"
+      // Use the full message code for type/phenomenon/level parsing; it carries
+      // the WAR/WAT/ALT/SUM prefix the parser needs.
+      const msgCodeMatch = r.message?.match(/Space\s+Weather\s+Message\s+Code:\s*(\S+)/i);
+      const msgCode = msgCodeMatch?.[1] ?? id;
       // Parse valid from/to from structured message lines like:
       //   Valid From: 2026 Jun 04 0000 UTC
       //   Valid To: 2026 Jun 04 2359 UTC
@@ -461,11 +524,11 @@ export class SpaceWeatherService {
       const toMatch = r.message?.match(/Valid\s+To:\s*(.+?)(?:\r?\n|\r)/i);
       return {
         productId: id,
-        productType: parseProductType(id),
-        level: parseLevel(id),
+        productType: parseProductType(msgCode),
+        level: parseLevel(msgCode),
         issueDatetime: r.issue_datetime,
         message: (r.message ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim(),
-        phenomenon: parsePhenomenon(id),
+        phenomenon: parsePhenomenon(msgCode),
         validFrom: fromMatch?.[1] != null ? fromMatch[1].trim() : null,
         validTo: toMatch?.[1] != null ? toMatch[1].trim() : null,
       };

@@ -123,6 +123,50 @@ describe('getSolarWind', () => {
     });
   });
 
+  it('correctly windows records — service normalizes SWPC time tags to ISO 8601 UTC', async () => {
+    // The service layer normalizes SWPC space-separated tags ("2026-06-05 07:01:00.000")
+    // to ISO 8601 UTC ("2026-06-05T07:01:00.000Z") before the handler sees them.
+    // After normalization, ISO string comparison is safe for windowing.
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 1 * 60 * 60 * 1000);
+    const fiveHoursAgo = new Date(now.getTime() - 5 * 60 * 60 * 1000);
+
+    // Service returns already-normalized ISO 8601 UTC tags (the service normalizes before returning)
+    const plasmaData: SolarWindPlasma[] = [
+      {
+        timeTag: fiveHoursAgo.toISOString(), // outside 3-hour window
+        densityPerCm3: 4.0,
+        speedKmS: 400,
+        temperatureK: 70000,
+      },
+      {
+        timeTag: oneHourAgo.toISOString(), // inside 3-hour window
+        densityPerCm3: 5.0,
+        speedKmS: 450,
+        temperatureK: 80000,
+      },
+    ];
+    const magData: SolarWindMag[] = [
+      { timeTag: fiveHoursAgo.toISOString(), bxGsm: 1, byGsm: 1, bzGsm: -2, bt: 2.4 },
+      { timeTag: oneHourAgo.toISOString(), bxGsm: 1, byGsm: 1, bzGsm: -8, bt: 8.1 },
+    ];
+    const svc = {
+      getSolarWindPlasma: vi.fn().mockResolvedValue(plasmaData),
+      getSolarWindMag: vi.fn().mockResolvedValue(magData),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = getSolarWind.input.parse({ window_hours: 3 });
+    const result = await getSolarWind.handler(input, ctx);
+
+    // Only the record within the window should be returned
+    expect(result.plasmaCount).toBe(1);
+    expect(result.magCount).toBe(1);
+    expect(result.latestPlasma!.speedKmS).toBe(450);
+    expect(result.bzStatus).toContain('-8');
+  });
+
   it('formats output with Bz status and series', () => {
     const output = {
       plasma: [
