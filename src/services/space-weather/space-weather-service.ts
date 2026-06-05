@@ -30,7 +30,7 @@ import type {
 
 const BASE_URL = 'https://services.swpc.noaa.gov';
 const USER_AGENT =
-  'noaa-spaceweather-mcp-server/0.1.0 (github.com/cyanheads/noaa-spaceweather-mcp-server)';
+  'noaa-spaceweather-mcp-server/0.1.1 (github.com/cyanheads/noaa-spaceweather-mcp-server)';
 const FETCH_TIMEOUT_MS = 15_000;
 
 /** Missing/fill value used in many SWPC feeds for sensor failures. */

@@ -1,6 +1,6 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-06-05 09:59:06
+Generated on: 2026-06-05 12:24:45
 
 ```text
 noaa-spaceweather-mcp-server/
@@ -19,6 +19,7 @@ noaa-spaceweather-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
+│   ├── 0.1.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -158,6 +159,7 @@ noaa-spaceweather-mcp-server/
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
+├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
