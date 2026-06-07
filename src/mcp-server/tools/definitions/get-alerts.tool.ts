@@ -38,7 +38,8 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
     'Active SWPC alerts, watches, and warnings — parsed into structured records with product type, ' +
     'severity level, issue time, validity window, and plain text. Covers geomagnetic storms, radio ' +
     'blackouts, radiation storms, and aurora bulletins. With active_only=false, also returns ' +
-    'informational summaries and expired notices.',
+    'informational summaries and expired notices. max_age_hours controls how far back to look ' +
+    '(default 48 h); the SWPC feed keeps all historical records and has no built-in expiry.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     active_only: z
@@ -46,6 +47,14 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
       .default(true)
       .describe(
         'When true (default), return only Warnings, Watches, and Alerts; exclude Summaries and Other. Set false to return all products.',
+      ),
+    max_age_hours: z
+      .number()
+      .min(1)
+      .max(720)
+      .default(48)
+      .describe(
+        'Maximum age of alerts to return, in hours (default 48). The SWPC feed retains all historical records — this window prevents returning weeks of historical notices as "active."',
       ),
   }),
   output: z.object({
@@ -65,16 +74,24 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
   ],
 
   async handler(input, ctx) {
-    ctx.log.info('Fetching SWPC alerts', { active_only: input.active_only });
+    ctx.log.info('Fetching SWPC alerts', {
+      active_only: input.active_only,
+      max_age_hours: input.max_age_hours,
+    });
     const svc = getSpaceWeatherService();
     const all = await svc.getAlerts(ctx);
 
+    // Apply recency window first — the feed keeps all historical records with no
+    // expiry; without this, active_only=true returns weeks of historical notices.
+    const cutoff = new Date(Date.now() - input.max_age_hours * 60 * 60 * 1000).toISOString();
+    const recents = all.filter((a) => a.issueDatetime >= cutoff);
+
     const filtered = input.active_only
-      ? all.filter(
+      ? recents.filter(
           (a) =>
             a.productType === 'Warning' || a.productType === 'Watch' || a.productType === 'Alert',
         )
-      : all;
+      : recents;
 
     if (filtered.length === 0) {
       ctx.enrich.notice(

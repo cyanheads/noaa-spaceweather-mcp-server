@@ -144,4 +144,68 @@ describe('getConditions', () => {
     expect(text).toContain('3-Day Forecast');
     expect(text).toContain('G1');
   });
+
+  it('normalizes "none" and empty text to "—" in format output (issue #5)', () => {
+    const result = {
+      observedAt: '2026-06-04 15:00:00',
+      currentKp: 0,
+      currentGScale: 0,
+      auroraLatitude: 'No significant aurora expected at mid-latitudes',
+      today: {
+        G: { scale: 0, text: 'none', label: 'G0' }, // NOAA feed literal
+        R: { scale: 0, text: '', label: 'R0' }, // empty string fallback
+        S: { scale: 0, text: 'None', label: 'S0' }, // capitalised variant
+      },
+      forecast: [
+        {
+          date: '2026-06-05',
+          G: { scale: 0, text: 'none', label: 'G0' },
+          R: { scale: 0, text: '', label: 'R0' },
+          S: { scale: 0, text: 'None', label: 'S0' },
+        },
+      ],
+      summary: 'Quiet conditions — no significant storms active.',
+    };
+    const blocks = getConditions.format!(result);
+    const text = (blocks[0] as { text: string }).text;
+    // All scale-0 entries should render as "—", never "none" or "None"
+    expect(text).not.toContain('none');
+    expect(text).not.toContain('None');
+    expect(text).toMatch(/G0 \(scale 0\) —/);
+  });
+
+  it('includes forecast storm in summary when current conditions are quiet (issue #2)', async () => {
+    // Today is quiet, but G3 forecast for the next day
+    const scalesWithForecast: import('@/services/space-weather/types.js').NoaaScalesData = {
+      today: {
+        date: '2026-06-04',
+        time: '15:00:00',
+        G: { category: 'G', scale: 0, text: '', minorProb: null, majorProb: null },
+        R: { category: 'R', scale: 0, text: '', minorProb: null, majorProb: null },
+        S: { category: 'S', scale: 0, text: '', minorProb: null, majorProb: null },
+      },
+      forecast: [
+        {
+          date: '2026-06-05',
+          time: '00:00:00',
+          G: { category: 'G', scale: 3, text: 'Strong', minorProb: 60, majorProb: null },
+          R: { category: 'R', scale: 0, text: '', minorProb: null, majorProb: null },
+          S: { category: 'S', scale: 0, text: '', minorProb: null, majorProb: null },
+        },
+      ],
+    };
+    const svc = {
+      getNoaaScales: vi.fn().mockResolvedValue(scalesWithForecast),
+      getKpObserved: vi.fn().mockResolvedValue(makeKpObservations(1)),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getConditions.errors });
+    const input = getConditions.input.parse({});
+    const result = await getConditions.handler(input, ctx);
+
+    expect(result.summary).toMatch(/Quiet now/);
+    expect(result.summary).toMatch(/G3/);
+    expect(result.summary).toMatch(/2026-06-05/);
+  });
 });

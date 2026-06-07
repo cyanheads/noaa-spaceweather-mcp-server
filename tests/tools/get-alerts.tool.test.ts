@@ -36,9 +36,15 @@ describe('getAlerts', () => {
   });
 
   it('returns active alerts filtered to Warning/Watch/Alert when active_only=true', async () => {
+    const recent = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h ago
     const alerts: SpaceWeatherAlert[] = [
-      makeAlert({ productType: 'Warning' }),
-      makeAlert({ productId: 'SUMS', productType: 'Summary', phenomenon: 'Space Weather' }),
+      makeAlert({ productType: 'Warning', issueDatetime: recent }),
+      makeAlert({
+        productId: 'SUMS',
+        productType: 'Summary',
+        phenomenon: 'Space Weather',
+        issueDatetime: recent,
+      }),
     ];
     const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
     mockGetSpaceWeatherService.mockReturnValue(svc as never);
@@ -52,11 +58,48 @@ describe('getAlerts', () => {
     expect(result.alerts.every((a) => a.productType !== 'Summary')).toBe(true);
   });
 
-  it('returns all products when active_only=false', async () => {
+  it('excludes alerts older than max_age_hours', async () => {
+    const recent = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h ago
+    const old = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString(); // 72h ago
     const alerts: SpaceWeatherAlert[] = [
-      makeAlert({ productType: 'Warning' }),
-      makeAlert({ productId: 'SUMS', productType: 'Summary', phenomenon: 'Space Weather' }),
-      makeAlert({ productId: 'ALTK07', productType: 'Alert', level: 7 }),
+      makeAlert({ productType: 'Warning', issueDatetime: recent }),
+      makeAlert({ productType: 'Watch', issueDatetime: old }),
+    ];
+    const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAlerts.errors });
+    const input = getAlerts.input.parse({ active_only: true, max_age_hours: 48 });
+    const result = await getAlerts.handler(input, ctx);
+
+    expect(result.totalCount).toBe(1);
+    expect(result.alerts[0]!.issueDatetime).toBe(recent);
+  });
+
+  it('respects max_age_hours=720 to return all historical alerts', async () => {
+    const old = new Date(Date.now() - 500 * 60 * 60 * 1000).toISOString(); // 500h ago
+    const alerts: SpaceWeatherAlert[] = [makeAlert({ productType: 'Warning', issueDatetime: old })];
+    const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAlerts.errors });
+    const input = getAlerts.input.parse({ active_only: false, max_age_hours: 720 });
+    const result = await getAlerts.handler(input, ctx);
+
+    expect(result.totalCount).toBe(1);
+  });
+
+  it('returns all products when active_only=false', async () => {
+    const recent = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(); // 1h ago
+    const alerts: SpaceWeatherAlert[] = [
+      makeAlert({ productType: 'Warning', issueDatetime: recent }),
+      makeAlert({
+        productId: 'SUMS',
+        productType: 'Summary',
+        phenomenon: 'Space Weather',
+        issueDatetime: recent,
+      }),
+      makeAlert({ productId: 'ALTK07', productType: 'Alert', level: 7, issueDatetime: recent }),
     ];
     const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
     mockGetSpaceWeatherService.mockReturnValue(svc as never);
@@ -70,7 +113,8 @@ describe('getAlerts', () => {
   });
 
   it('populates fetchedAt with an ISO timestamp', async () => {
-    const svc = { getAlerts: vi.fn().mockResolvedValue([makeAlert()]) };
+    const recent = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(); // 1h ago
+    const svc = { getAlerts: vi.fn().mockResolvedValue([makeAlert({ issueDatetime: recent })]) };
     mockGetSpaceWeatherService.mockReturnValue(svc as never);
 
     const ctx = createMockContext({ errors: getAlerts.errors });

@@ -93,7 +93,7 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
 
     const today = scales.today;
 
-    // Build summary
+    // Build summary — incorporate both current conditions and notable forecast activity.
     const parts: string[] = [];
     if (today.G.scale >= 1)
       parts.push(`G${today.G.scale} ${today.G.text.toLowerCase()} geomagnetic storm`);
@@ -101,11 +101,27 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       parts.push(`R${today.R.scale} ${today.R.text.toLowerCase()} radio blackout`);
     if (today.S.scale >= 1)
       parts.push(`S${today.S.scale} ${today.S.text.toLowerCase()} solar radiation storm`);
-    const summary =
-      parts.length > 0
-        ? parts.map((p, i) => (i === 0 ? p.charAt(0).toUpperCase() + p.slice(1) : p)).join('; ') +
-          ' in progress.'
-        : 'Quiet conditions — no significant storms active.';
+
+    let summary: string;
+    if (parts.length > 0) {
+      summary =
+        parts.map((p, i) => (i === 0 ? p.charAt(0).toUpperCase() + p.slice(1) : p)).join('; ') +
+        ' in progress.';
+    } else {
+      // Check forecast for upcoming elevated activity — pick the highest G-scale day.
+      let peakScale = 0;
+      let peakDate = '';
+      for (const p of scales.forecast) {
+        if (p.G.scale > peakScale) {
+          peakScale = p.G.scale;
+          peakDate = p.date;
+        }
+      }
+      summary =
+        peakScale >= 1
+          ? `Quiet now — G${peakScale} ${scales.forecast.find((p) => p.date === peakDate)?.G.text.toLowerCase()} geomagnetic storm forecast for ${peakDate}.`
+          : 'Quiet conditions — no significant storms active.';
+    }
 
     return {
       observedAt: `${today.date} ${today.time}`,
@@ -128,6 +144,9 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
   },
 
   format: (result) => {
+    /** Normalize scale text: empty string or NOAA's literal "none" → "—". */
+    const scaleText = (t: string) => (t && t.toLowerCase() !== 'none' ? t : '—');
+
     const lines: string[] = [];
     lines.push(`## Space Weather Conditions — ${result.observedAt} UTC`);
     lines.push('');
@@ -139,20 +158,20 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
     lines.push('');
     lines.push('### Today');
     lines.push(
-      `- **Geomagnetic (G):** ${result.today.G.label} (scale ${result.today.G.scale}) ${result.today.G.text || 'None'}`,
+      `- **Geomagnetic (G):** ${result.today.G.label} (scale ${result.today.G.scale}) ${scaleText(result.today.G.text)}`,
     );
     lines.push(
-      `- **Radio Blackout (R):** ${result.today.R.label} (scale ${result.today.R.scale}) ${result.today.R.text || 'None'}`,
+      `- **Radio Blackout (R):** ${result.today.R.label} (scale ${result.today.R.scale}) ${scaleText(result.today.R.text)}`,
     );
     lines.push(
-      `- **Solar Radiation (S):** ${result.today.S.label} (scale ${result.today.S.scale}) ${result.today.S.text || 'None'}`,
+      `- **Solar Radiation (S):** ${result.today.S.label} (scale ${result.today.S.scale}) ${scaleText(result.today.S.text)}`,
     );
     if (result.forecast.length > 0) {
       lines.push('');
       lines.push('### 3-Day Forecast');
       for (const day of result.forecast) {
         lines.push(
-          `**${day.date}:** ${day.G.label} (scale ${day.G.scale}) ${day.G.text || 'None'} | ${day.R.label} (scale ${day.R.scale}) ${day.R.text || 'None'} | ${day.S.label} (scale ${day.S.scale}) ${day.S.text || 'None'}`,
+          `**${day.date}:** ${day.G.label} (scale ${day.G.scale}) ${scaleText(day.G.text)} | ${day.R.label} (scale ${day.R.scale}) ${scaleText(day.R.text)} | ${day.S.label} (scale ${day.S.scale}) ${scaleText(day.S.text)}`,
         );
       }
     }
