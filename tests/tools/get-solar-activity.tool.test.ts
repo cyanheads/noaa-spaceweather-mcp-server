@@ -78,7 +78,9 @@ describe('getSolarActivity', () => {
 
     expect(result.latestXray).not.toBeNull();
     expect(result.latestXray!.flareClass).toBe('C');
-    expect(result.latestXray!.fluxWm2).toBe(1e-6);
+    // fluxWm2 is now a formatted string in scientific notation (e.g. "1.0e-6 W/m²")
+    expect(result.latestXray!.fluxWm2).toMatch(/e[-+]\d/);
+    expect(result.latestXray!.fluxWm2).toContain('W/m²');
     expect(result.sScale).toBe(0);
     expect(result.sScaleText).toContain('No radiation storm');
     expect(result.activeRegions).toHaveLength(1);
@@ -162,12 +164,12 @@ describe('getSolarActivity', () => {
     const output = {
       latestXray: {
         timeTag: '2026-06-04T14:00:00Z',
-        fluxWm2: 1.2e-4,
+        fluxWm2: '1.2e-4 W/m²',
         flareClass: 'X',
         satellite: 18,
       },
       recentXray: [
-        { timeTag: '2026-06-04T14:00:00Z', fluxWm2: 1.2e-4, flareClass: 'X', satellite: 18 },
+        { timeTag: '2026-06-04T14:00:00Z', fluxWm2: '1.2e-4 W/m²', flareClass: 'X', satellite: 18 },
       ],
       probabilities: [
         { date: '2026-06-04', cClass1Day: 55, mClass1Day: 20, xClass1Day: 5, protons1Day: 5 },
@@ -205,5 +207,35 @@ describe('getSolarActivity', () => {
     expect(text).toContain('AR3782');
     expect(text).toContain('N17E47');
     expect(text).toContain('C=65%');
+  });
+
+  it('formats X-ray flux as scientific notation in content[] (issue #4)', async () => {
+    // Verify the handler produces formatted strings in structuredContent.
+    const svc = {
+      getXrayFlux: vi.fn().mockResolvedValue([
+        makeXrayReading(0.5, 9.167114285446587e-7), // B-class
+        makeXrayReading(0.25, 0.0000013899084478907753), // C-class
+      ]),
+      getSolarProbabilities: vi.fn().mockResolvedValue([]),
+      getProtonFlux: vi.fn().mockResolvedValue([]),
+      getSolarRegions: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const input = getSolarActivity.input.parse({});
+    const result = await getSolarActivity.handler(input, ctx);
+
+    // fluxWm2 must be formatted scientific notation, NOT raw full-precision float
+    expect(result.latestXray!.fluxWm2).not.toMatch(/\d{10}/); // no 10+ digit precision
+    expect(result.latestXray!.fluxWm2).toMatch(/^\d+\.\d+e[-+]\d+ W\/m²$/);
+
+    const blocks = getSolarActivity.format!(result);
+    const text = (blocks[0] as { text: string }).text;
+    // format() just renders the pre-formatted string — no raw floats
+    expect(text).not.toContain('9.167114285446587e-7 W/m²');
+    expect(text).not.toContain('0.0000013899084478907753 W/m²');
+    // Scientific notation with 2 significant digits appears in content[]
+    expect(text).toContain('W/m²');
   });
 });

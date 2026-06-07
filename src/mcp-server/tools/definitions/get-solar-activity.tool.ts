@@ -16,6 +16,12 @@ function classifyFlare(fluxWm2: number): string {
   return 'A';
 }
 
+/** Format X-ray flux to 2 significant digits in scientific notation, e.g. 1.4e-6. */
+function formatFlux(fluxWm2: number): string {
+  // toPrecision gives "1.40e-6" style; strip trailing zeros after decimal for readability.
+  return fluxWm2.toExponential(1) + ' W/m²';
+}
+
 /** Classify proton flux to NOAA S-scale. */
 function classifySScale(fluxPfu: number): number {
   if (fluxPfu >= 100000) return 5;
@@ -29,7 +35,11 @@ function classifySScale(fluxPfu: number): number {
 const XraySchema = z
   .object({
     timeTag: z.string().describe('ISO 8601 measurement time tag.'),
-    fluxWm2: z.number().describe('X-ray flux in W/m² (0.1-0.8nm long channel from GOES).'),
+    fluxWm2: z
+      .string()
+      .describe(
+        'X-ray flux in W/m² (0.1-0.8nm long channel from GOES), formatted as scientific notation with 2 significant digits, e.g. "1.4e-6 W/m²".',
+      ),
     flareClass: z.string().describe('Flare classification letter: A, B, C, M, or X.'),
     satellite: z.number().describe('GOES satellite number.'),
   })
@@ -140,7 +150,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     const latestXray = latestXrayRaw
       ? {
           timeTag: latestXrayRaw.timeTag,
-          fluxWm2: latestXrayRaw.fluxWm2,
+          fluxWm2: formatFlux(latestXrayRaw.fluxWm2),
           flareClass: classifyFlare(latestXrayRaw.fluxWm2),
           satellite: latestXrayRaw.satellite,
         }
@@ -154,7 +164,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       .filter((r) => r.timeTag >= hourCutoffIso)
       .map((r) => ({
         timeTag: r.timeTag,
-        fluxWm2: r.fluxWm2,
+        fluxWm2: formatFlux(r.fluxWm2),
         flareClass: classifyFlare(r.fluxWm2),
         satellite: r.satellite,
       }));
@@ -221,16 +231,14 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('');
       lines.push('### Latest X-ray Flux');
       lines.push(
-        `**Time:** ${x.timeTag} | **Class:** ${x.flareClass} | **Flux:** ${x.fluxWm2} W/m² | **Satellite:** GOES-${x.satellite}`,
+        `**Time:** ${x.timeTag} | **Class:** ${x.flareClass} | **Flux:** ${x.fluxWm2} | **Satellite:** GOES-${x.satellite}`,
       );
     }
     if (result.recentXray.length > 0) {
       lines.push('');
       lines.push('### X-ray (Past Hour)');
       for (const r of result.recentXray) {
-        lines.push(
-          `- ${r.timeTag}: ${r.flareClass} class — ${r.fluxWm2} W/m² | GOES-${r.satellite}`,
-        );
+        lines.push(`- ${r.timeTag}: ${r.flareClass} class — ${r.fluxWm2} | GOES-${r.satellite}`);
       }
     }
     if (result.latestProton) {

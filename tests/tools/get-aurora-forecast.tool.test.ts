@@ -110,7 +110,29 @@ describe('getAuroraForecast', () => {
 
     expect(result.localLookup).not.toBeNull();
     expect(result.localLookup!.auroraPercent).toBe(80);
+    // minKp=0 at ≥65° lat — verdict should NOT say "Kp≥0 needed"
+    expect(result.localLookup!.minKpRequired).toBe(0);
     expect(result.localLookup!.verdict).toMatch(/Good aurora chance/);
+    expect(result.localLookup!.verdict).not.toContain('Kp≥0');
+  });
+
+  it('omits Kp threshold clause when minKpRequired=0 and probability is low (issue #3)', async () => {
+    const highLatGrid: AuroraForecastData = {
+      meta: { observationTime: '2026-06-04T14:30:00Z', forecastTime: '2026-06-04T15:00:00Z' },
+      grid: [{ longitude: 18, latitude: 69, auroraPercent: 7 }], // 7% — low chance bracket
+    };
+    const svc = { getAuroraForecast: vi.fn().mockResolvedValue(highLatGrid) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAuroraForecast.errors });
+    const input = getAuroraForecast.input.parse({ latitude: 69.6, longitude: 18.95 });
+    const result = await getAuroraForecast.handler(input, ctx);
+
+    expect(result.localLookup).not.toBeNull();
+    expect(result.localLookup!.minKpRequired).toBe(0);
+    // Must not contain "Kp≥0 needed" — that statement is trivially true and useless.
+    expect(result.localLookup!.verdict).not.toContain('Kp≥0');
+    expect(result.localLookup!.verdict).toMatch(/Low aurora chance/);
   });
 
   it('formats output with grid stats and local lookup section', () => {

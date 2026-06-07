@@ -165,11 +165,18 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
       if (nearest) {
         const minKp = minKpForLatitude(Math.abs(lat));
         const pct = nearest.auroraPercent;
+        const kpClause = minKp > 0 ? ` Kp≥${minKp} needed at this latitude.` : '';
         let verdict: string;
         if (pct >= 30)
-          verdict = `Good aurora chance (${pct}%) — Kp≥${minKp} needed at this latitude.`;
+          verdict =
+            minKp === 0
+              ? `Good aurora chance (${pct}%) at this latitude — no Kp minimum required, aurora possible now.`
+              : `Good aurora chance (${pct}%) —${kpClause}`;
         else if (pct >= 5)
-          verdict = `Low aurora chance (${pct}%) — conditions marginal. Kp≥${minKp} needed.`;
+          verdict =
+            minKp === 0
+              ? `Low aurora chance (${pct}%) at this location — aurora activity is low despite the favorable latitude.`
+              : `Low aurora chance (${pct}%) — conditions marginal.${kpClause}`;
         else if (minKp === 0)
           verdict = `Very low aurora probability (${pct}%) despite favorable latitude — wait for elevated solar activity and higher Kp.`;
         else
