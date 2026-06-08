@@ -83,8 +83,10 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
 
     // Apply recency window first — the feed keeps all historical records with no
     // expiry; without this, active_only=true returns weeks of historical notices.
-    const cutoff = new Date(Date.now() - input.max_age_hours * 60 * 60 * 1000).toISOString();
-    const recents = all.filter((a) => a.issueDatetime >= cutoff);
+    // Compare as Date objects (epoch) — string comparison would silently fail when
+    // issueDatetime and the ISO cutoff don't share the exact same format.
+    const cutoffMs = Date.now() - input.max_age_hours * 60 * 60 * 1000;
+    const recents = all.filter((a) => new Date(a.issueDatetime).getTime() >= cutoffMs);
 
     const filtered = input.active_only
       ? recents.filter(
@@ -97,7 +99,7 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
       ctx.enrich.notice(
         input.active_only
           ? 'No active alerts, watches, or warnings. Set active_only=false to include summaries.'
-          : 'No space weather products currently issued.',
+          : 'No space weather products issued in the requested window.',
       );
     }
 

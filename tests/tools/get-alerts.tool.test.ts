@@ -76,6 +76,30 @@ describe('getAlerts', () => {
     expect(result.alerts[0]!.issueDatetime).toBe(recent);
   });
 
+  it('includes alerts whose issueDatetime shares the cutoff calendar date (regression #6)', async () => {
+    // Simulate the bug: an alert issued 35h ago on the cutoff's calendar date was silently
+    // dropped because string comparison treated space-separated "2026-06-06 22:11:17" as
+    // less than the ISO cutoff "2026-06-06T..." (space 0x20 < T 0x54).
+    // The service now normalizes to ISO 8601, so the handler receives an ISO string and
+    // must compare it correctly as a Date.
+    const hoursAgo35 = new Date(Date.now() - 35 * 60 * 60 * 1000).toISOString();
+    const hoursAgo2 = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const alerts: SpaceWeatherAlert[] = [
+      makeAlert({ productType: 'Watch', issueDatetime: hoursAgo35 }), // should be included at 48h window
+      makeAlert({ productType: 'Warning', issueDatetime: hoursAgo2 }),
+    ];
+    const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAlerts.errors });
+    const input = getAlerts.input.parse({ active_only: true, max_age_hours: 48 });
+    const result = await getAlerts.handler(input, ctx);
+
+    // Both alerts are within the 48h window; both must be returned.
+    expect(result.totalCount).toBe(2);
+    expect(result.alerts.some((a) => a.issueDatetime === hoursAgo35)).toBe(true);
+  });
+
   it('respects max_age_hours=720 to return all historical alerts', async () => {
     const old = new Date(Date.now() - 500 * 60 * 60 * 1000).toISOString(); // 500h ago
     const alerts: SpaceWeatherAlert[] = [makeAlert({ productType: 'Warning', issueDatetime: old })];

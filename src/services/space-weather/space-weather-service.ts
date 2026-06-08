@@ -526,7 +526,10 @@ export class SpaceWeatherService {
         productId: id,
         productType: parseProductType(msgCode),
         level: parseLevel(msgCode),
-        issueDatetime: r.issue_datetime,
+        // Normalize SWPC's space-separated datetime ("2026-06-06 22:11:17") to ISO 8601 so
+        // downstream Date comparisons work correctly (the SpaceWeatherAlert.issueDatetime
+        // contract says ISO 8601; raw feed values break string comparisons with ISO cutoffs).
+        issueDatetime: normalizeSwpcTime(r.issue_datetime ?? ''),
         message: (r.message ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim(),
         phenomenon: parsePhenomenon(msgCode),
         validFrom: fromMatch?.[1] != null ? fromMatch[1].trim() : null,
