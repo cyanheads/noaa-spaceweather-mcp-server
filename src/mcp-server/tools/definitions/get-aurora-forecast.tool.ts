@@ -167,20 +167,26 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
         const pct = nearest.auroraPercent;
         const kpClause = minKp > 0 ? ` Kp≥${minKp} needed at this latitude.` : '';
         let verdict: string;
-        if (pct >= 30)
+        // Guard: when minKp===9 the location is below the minimum aurora latitude (~40° geographic).
+        // Even a G5 extreme storm (Kp 9) reaches only ~40° geomagnetic — implying aurora is
+        // "possible with Kp≥9" at equatorial latitudes is misleading.
+        if (minKp === 9) {
+          verdict = `Aurora not visible at this latitude — even G5 extreme storms (Kp 9) do not reach below ~40° geographic latitude. Travel to latitudes above 40° to see aurora.`;
+        } else if (pct >= 30) {
           verdict =
             minKp === 0
               ? `Good aurora chance (${pct}%) at this latitude — no Kp minimum required, aurora possible now.`
               : `Good aurora chance (${pct}%) —${kpClause}`;
-        else if (pct >= 5)
+        } else if (pct >= 5) {
           verdict =
             minKp === 0
               ? `Low aurora chance (${pct}%) at this location — aurora activity is low despite the favorable latitude.`
               : `Low aurora chance (${pct}%) — conditions marginal.${kpClause}`;
-        else if (minKp === 0)
+        } else if (minKp === 0) {
           verdict = `Very low aurora probability (${pct}%) despite favorable latitude — wait for elevated solar activity and higher Kp.`;
-        else
+        } else {
           verdict = `Very low aurora probability (${pct}%) at this location. Kp≥${minKp} needed — travel to higher latitudes or wait for elevated Kp.`;
+        }
 
         localLookup = {
           requestedLatitude: lat,

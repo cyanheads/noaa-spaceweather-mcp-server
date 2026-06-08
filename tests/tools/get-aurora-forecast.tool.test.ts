@@ -116,6 +116,32 @@ describe('getAuroraForecast', () => {
     expect(result.localLookup!.verdict).not.toContain('Kp≥0');
   });
 
+  it('returns "not visible" verdict at equatorial latitude where minKp=9 (regression #9)', async () => {
+    // At latitude 0 (equator), minKpForLatitude returns 9.
+    // Even a G5 extreme storm does not reach below ~40° geographic latitude.
+    // The verdict must not imply aurora is reachable.
+    const equatorialGrid: AuroraForecastData = {
+      meta: { observationTime: '2026-06-08T09:00:00Z', forecastTime: '2026-06-08T09:30:00Z' },
+      grid: [
+        { longitude: 0, latitude: 0, auroraPercent: 8 }, // OVATION artifact at equator
+        { longitude: 1, latitude: 0, auroraPercent: 5 },
+      ],
+    };
+    const svc = { getAuroraForecast: vi.fn().mockResolvedValue(equatorialGrid) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAuroraForecast.errors });
+    const input = getAuroraForecast.input.parse({ latitude: 0, longitude: 0 });
+    const result = await getAuroraForecast.handler(input, ctx);
+
+    expect(result.localLookup).not.toBeNull();
+    expect(result.localLookup!.minKpRequired).toBe(9);
+    // Must NOT say "Kp≥9 needed" — that implies aurora is possible with extreme storms
+    expect(result.localLookup!.verdict).not.toMatch(/Kp[≥>=]+9 needed/);
+    // Must clearly state aurora is not visible at this latitude
+    expect(result.localLookup!.verdict).toMatch(/not visible|not reach/i);
+  });
+
   it('omits Kp threshold clause when minKpRequired=0 and probability is low (issue #3)', async () => {
     const highLatGrid: AuroraForecastData = {
       meta: { observationTime: '2026-06-04T14:30:00Z', forecastTime: '2026-06-04T15:00:00Z' },
