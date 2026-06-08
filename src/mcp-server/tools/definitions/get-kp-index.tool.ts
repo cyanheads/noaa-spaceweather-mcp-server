@@ -7,6 +7,16 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
 
+/** Maps Kp value (0–9) to NOAA G-scale level (0–5). Mirrors the service helper. */
+function kpToGScale(kp: number): number {
+  if (kp >= 9) return 5;
+  if (kp >= 8) return 4;
+  if (kp >= 7) return 3;
+  if (kp >= 6) return 2;
+  if (kp >= 5) return 1;
+  return 0;
+}
+
 const KpObsSchema = z
   .object({
     timeTag: z.string().describe('ISO 8601 3-hour interval time tag.'),
@@ -23,13 +33,15 @@ const KpForecastSchema = z
     kp: z.number().describe('Forecasted Kp value.'),
     observed: z
       .string()
-      .describe('"observed" for confirmed readings, "predicted" for forecast points.'),
+      .describe('"estimated" for near-real-time model points, "predicted" for forecast points.'),
     noaaScale: z
       .string()
       .nullable()
       .describe('NOAA scale string, e.g. "G1", null when not available.'),
+    gScale: z.number().describe('NOAA G-scale equivalent (0–5) derived from Kp.'),
+    gLabel: z.string().describe('NOAA G-scale label, e.g. "G0", "G3".'),
   })
-  .describe('One Kp forecast interval.');
+  .describe('One forward-looking Kp forecast interval (estimated or predicted).');
 
 export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
   title: 'Get Kp Index',
@@ -56,7 +68,11 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
     observed: z
       .array(KpObsSchema)
       .describe('Observed Kp readings within the requested window, oldest first.'),
-    forecast: z.array(KpForecastSchema).describe('3-day Kp forecast series.'),
+    forecast: z
+      .array(KpForecastSchema)
+      .describe(
+        'Forward-looking Kp forecast series (estimated and predicted entries only; observed history excluded).',
+      ),
     currentKp: z.number().describe('Latest observed Kp value.'),
     currentGScale: z.number().describe('NOAA G-scale for current Kp.'),
     auroraLatitude: z.string().describe('Aurora visibility guidance for current conditions.'),
@@ -92,6 +108,11 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
     const auroraLatitude =
       latest?.auroraLatitude ?? 'No significant aurora expected at mid-latitudes';
 
+    // Filter forecast to forward-looking entries only — the SWPC feed embeds historical
+    // "observed" readings alongside the actual forecast tail; including them contradicts
+    // the "forecast" label and misleads callers reading past Kp as predictions.
+    const forwardForecast = forecast.filter((r) => r.observed !== 'observed');
+
     return {
       observed: observed.map((r) => ({
         timeTag: r.timeTag,
@@ -100,12 +121,17 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
         gLabel: `G${r.gScale}`,
         auroraLatitude: r.auroraLatitude,
       })),
-      forecast: forecast.map((r) => ({
-        timeTag: r.timeTag,
-        kp: r.kp,
-        observed: r.observed,
-        noaaScale: r.noaaScale,
-      })),
+      forecast: forwardForecast.map((r) => {
+        const gScale = kpToGScale(r.kp);
+        return {
+          timeTag: r.timeTag,
+          kp: r.kp,
+          observed: r.observed,
+          noaaScale: r.noaaScale,
+          gScale,
+          gLabel: `G${gScale}`,
+        };
+      }),
       currentKp,
       currentGScale,
       auroraLatitude,
@@ -130,10 +156,12 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
     }
     if (result.forecast.length > 0) {
       lines.push('');
-      lines.push('### 3-Day Forecast');
+      lines.push('### Forecast');
       for (const r of result.forecast) {
         const scale = r.noaaScale ? ` (${r.noaaScale})` : '';
-        lines.push(`- ${r.timeTag}: Kp ${r.kp}${scale} [${r.observed}]`);
+        lines.push(
+          `- ${r.timeTag}: Kp ${r.kp} | G-scale ${r.gScale} (${r.gLabel})${scale} [${r.observed}]`,
+        );
       }
     }
     return [{ type: 'text', text: lines.join('\n') }];
