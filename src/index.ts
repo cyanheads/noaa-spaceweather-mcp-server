@@ -9,6 +9,8 @@ import { allToolDefinitions } from './mcp-server/tools/definitions/index.js';
 import { initSpaceWeatherService } from './services/space-weather/space-weather-service.js';
 
 await createApp({
+  name: 'noaa-spaceweather-mcp-server',
+  title: 'noaa-spaceweather-mcp-server',
   tools: allToolDefinitions,
   resources: [],
   prompts: [],
