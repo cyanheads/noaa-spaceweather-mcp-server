@@ -116,9 +116,10 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
     },
     {
       reason: 'invalid_coordinates',
-      code: JsonRpcErrorCode.InvalidParams,
-      when: 'latitude is outside −90–90 or longitude is outside −180–180.',
-      recovery: 'Provide latitude in range −90 to 90 and longitude in range −180 to 180.',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'One coordinate provided without the other.',
+      recovery:
+        'Provide both latitude and longitude together, or omit both for global metadata only.',
     },
   ],
 

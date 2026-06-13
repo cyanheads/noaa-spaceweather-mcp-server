@@ -87,7 +87,7 @@ describe('getAuroraForecast', () => {
       typeof getAuroraForecast.handler
     >[0];
     await expect(getAuroraForecast.handler(input, ctx)).rejects.toMatchObject({
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       data: { reason: 'invalid_coordinates' },
     });
   });
