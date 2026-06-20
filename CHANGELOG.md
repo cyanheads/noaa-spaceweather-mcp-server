@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-06-20
+
+Maintenance: mcp-ts-core ^0.10.9 adoption — check-dependency-specifiers + plugin-manifest devcheck guards, fresh-scaffold check fixes, vendored skill re-sync, .codex-plugin longDescription
+
 ## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-06-12
 
 Maintenance: mcp-ts-core ^0.10.6 adoption, explicit display identity, Docker healthcheck, MCPB bundle cleaner, aurora coordinate-error contract fix

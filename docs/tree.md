@@ -1,6 +1,6 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-06-13 03:56:16
+Generated on: 2026-06-20 12:10:47
 
 ```text
 noaa-spaceweather-mcp-server/
@@ -27,6 +27,7 @@ noaa-spaceweather-mcp-server/
 ├── scripts/
 │   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts

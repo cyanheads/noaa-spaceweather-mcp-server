@@ -1,6 +1,6 @@
 {
   "name": "noaa-spaceweather-mcp-server",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Query NOAA SWPC space weather: geomagnetic storm scales, Kp index, aurora forecasts, solar wind, solar activity, and alerts via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads"
