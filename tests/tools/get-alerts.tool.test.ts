@@ -24,8 +24,8 @@ function makeAlert(overrides: Partial<SpaceWeatherAlert> = {}): SpaceWeatherAler
     issueDatetime: '2026-06-04T12:00:00Z',
     message: 'Geomagnetic K-index of 4 expected.',
     phenomenon: 'Geomagnetic',
-    validFrom: '2026 Jun 04 1200 UTC',
-    validTo: '2026 Jun 04 2359 UTC',
+    validFrom: '2026-06-04T12:00:00Z',
+    validTo: '2026-06-04T23:59:00Z',
     ...overrides,
   };
 }
@@ -170,8 +170,8 @@ describe('getAlerts', () => {
           level: 4,
           phenomenon: 'Geomagnetic',
           issueDatetime: '2026-06-04T12:00:00Z',
-          validFrom: '2026 Jun 04 1200 UTC',
-          validTo: '2026 Jun 04 2359 UTC',
+          validFrom: '2026-06-04T12:00:00Z',
+          validTo: '2026-06-04T23:59:00Z',
           message: 'K-index of 4 expected.',
         },
       ],

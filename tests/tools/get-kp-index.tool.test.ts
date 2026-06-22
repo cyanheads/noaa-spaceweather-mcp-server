@@ -7,9 +7,17 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KpForecast, KpObservation } from '@/services/space-weather/types.js';
 
-vi.mock('@/services/space-weather/space-weather-service.js', () => ({
-  getSpaceWeatherService: vi.fn(),
-}));
+// Partial mock: stub the service accessor but keep the real `kpToGScale` export,
+// which the tool now imports from this module (issue #11) and the G-scale
+// assertions below rely on.
+vi.mock('@/services/space-weather/space-weather-service.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/services/space-weather/space-weather-service.js')>();
+  return {
+    ...actual,
+    getSpaceWeatherService: vi.fn(),
+  };
+});
 
 import { getKpIndex } from '@/mcp-server/tools/definitions/get-kp-index.tool.js';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';

@@ -5,17 +5,10 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
-
-/** Maps Kp value (0–9) to NOAA G-scale level (0–5). Mirrors the service helper. */
-function kpToGScale(kp: number): number {
-  if (kp >= 9) return 5;
-  if (kp >= 8) return 4;
-  if (kp >= 7) return 3;
-  if (kp >= 6) return 2;
-  if (kp >= 5) return 1;
-  return 0;
-}
+import {
+  getSpaceWeatherService,
+  kpToGScale,
+} from '@/services/space-weather/space-weather-service.js';
 
 const KpObsSchema = z
   .object({

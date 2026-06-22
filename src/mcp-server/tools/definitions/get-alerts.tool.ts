@@ -23,11 +23,15 @@ const AlertSchema = z
     validFrom: z
       .string()
       .nullable()
-      .describe('Validity start parsed from the message body, null if not found.'),
+      .describe(
+        'Validity-window start as ISO 8601 UTC, parsed from the message body ("Valid From" or "Begin Time"); null when the product carries no start line.',
+      ),
     validTo: z
       .string()
       .nullable()
-      .describe('Validity end parsed from the message body, null if not found.'),
+      .describe(
+        'Validity-window end as ISO 8601 UTC, parsed from the message body ("Valid To", "Now Valid Until", or "End Time"); null when the product carries no end line.',
+      ),
     message: z.string().describe('Full plain-text message body.'),
   })
   .describe('One SWPC alert, watch, warning, or summary.');

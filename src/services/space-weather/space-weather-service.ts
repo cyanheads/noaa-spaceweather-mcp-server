@@ -38,8 +38,8 @@ const FILL_VALUE = -9999;
 
 // ── NOAA scale helpers ──────────────────────────────────────────────────────
 
-/** Maps Kp value (0–9) to NOAA G-scale level (0–5). */
-function kpToGScale(kp: number): number {
+/** Maps Kp value (0–9) to NOAA G-scale level (0–5). Shared with get-kp-index tool. */
+export function kpToGScale(kp: number): number {
   if (kp >= 9) return 5;
   if (kp >= 8) return 4;
   if (kp >= 7) return 3;
@@ -138,6 +138,38 @@ function normalizeSwpcTime(tag: string): string {
   return normalized.endsWith('Z') ? normalized : `${normalized}Z`;
 }
 
+/** Three-letter month abbreviations used in SWPC product datetime lines. */
+const SWPC_MONTHS: Record<string, string> = {
+  jan: '01',
+  feb: '02',
+  mar: '03',
+  apr: '04',
+  may: '05',
+  jun: '06',
+  jul: '07',
+  aug: '08',
+  sep: '09',
+  oct: '10',
+  nov: '11',
+  dec: '12',
+};
+
+/**
+ * Parse a SWPC product datetime ("2026 Jun 14 0600 UTC") to ISO 8601 UTC
+ * ("2026-06-14T06:00:00Z"). SWPC alert/warning bodies use this "YYYY Mon DD
+ * HHMM UTC" shape, which `new Date()` cannot parse. Returns null when the input
+ * doesn't match, so callers can fall back to the raw text.
+ */
+function parseSwpcDatetime(raw: string): string | null {
+  const m = raw.trim().match(/^(\d{4})\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+UTC$/);
+  if (!m) return null;
+  const month = SWPC_MONTHS[m[2]!.toLowerCase()];
+  if (!month) return null;
+  const day = m[3]!.padStart(2, '0');
+  const hhmm = m[4]!;
+  return `${m[1]}-${month}-${day}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00Z`;
+}
+
 /**
  * Normalize array-of-arrays feed (plasma, mag) with a header row.
  * data[0] is string[] field names; data[1..n] are string[] value rows.
@@ -181,6 +213,18 @@ function parseLevel(id: string): number {
   const match = id.match(/(\d+)\w*$/);
   if (!match) return 0;
   return parseInt(match[1]!, 10);
+}
+
+/**
+ * Extract a validity datetime from the first message line matching `labelRe`
+ * (capture group 1 = the datetime text), normalized to ISO 8601 UTC. Falls back
+ * to the raw trimmed text when it doesn't match the SWPC datetime shape, and
+ * returns null when no line matches.
+ */
+function parseValidity(message: string, labelRe: RegExp): string | null {
+  const value = message.match(labelRe)?.[1]?.trim();
+  if (!value) return null;
+  return parseSwpcDatetime(value) ?? value;
 }
 
 // ── Raw feed types ─────────────────────────────────────────────────────────
@@ -510,18 +554,14 @@ export class SpaceWeatherService {
     const raw = await fetchFeed<RawAlert[]>('/products/alerts.json', ctx);
     return raw.map((r) => {
       const id = r.product_id ?? '';
+      const message = r.message ?? '';
       // The product_id field in the feed is a 4-char abbreviated code (e.g. "K04W").
       // The full message code (e.g. "WARK04") lives in the message body as:
       //   "Space Weather Message Code: WARK04"
       // Use the full message code for type/phenomenon/level parsing; it carries
       // the WAR/WAT/ALT/SUM prefix the parser needs.
-      const msgCodeMatch = r.message?.match(/Space\s+Weather\s+Message\s+Code:\s*(\S+)/i);
+      const msgCodeMatch = message.match(/Space\s+Weather\s+Message\s+Code:\s*(\S+)/i);
       const msgCode = msgCodeMatch?.[1] ?? id;
-      // Parse valid from/to from structured message lines like:
-      //   Valid From: 2026 Jun 04 0000 UTC
-      //   Valid To: 2026 Jun 04 2359 UTC
-      const fromMatch = r.message?.match(/Valid\s+From:\s*(.+?)(?:\r?\n|\r)/i);
-      const toMatch = r.message?.match(/Valid\s+To:\s*(.+?)(?:\r?\n|\r)/i);
       return {
         productId: id,
         productType: parseProductType(msgCode),
@@ -530,10 +570,18 @@ export class SpaceWeatherService {
         // downstream Date comparisons work correctly (the SpaceWeatherAlert.issueDatetime
         // contract says ISO 8601; raw feed values break string comparisons with ISO cutoffs).
         issueDatetime: normalizeSwpcTime(r.issue_datetime ?? ''),
-        message: (r.message ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim(),
+        message: message.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim(),
         phenomenon: parsePhenomenon(msgCode),
-        validFrom: fromMatch?.[1] != null ? fromMatch[1].trim() : null,
-        validTo: toMatch?.[1] != null ? toMatch[1].trim() : null,
+        // Validity window parsed from the message body, normalized to ISO 8601.
+        // SWPC labels it differently per product: Warnings/Watches use "Valid
+        // From/To", extended Warnings restate the expiry as "Now Valid Until",
+        // and Alerts/Summaries use "Begin/End Time". Products with no such line
+        // keep null.
+        validFrom: parseValidity(message, /(?:Valid\s+From|Begin\s+Time):\s*([^\r\n]+)/i),
+        validTo: parseValidity(
+          message,
+          /(?:Valid\s+To|Now\s+Valid\s+Until|End\s+Time):\s*([^\r\n]+)/i,
+        ),
       };
     });
   }

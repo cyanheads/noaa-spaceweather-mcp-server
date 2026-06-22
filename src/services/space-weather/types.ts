@@ -208,8 +208,8 @@ export interface SpaceWeatherAlert {
   productId: string;
   /** Product type derived from the code prefix. */
   productType: 'Warning' | 'Watch' | 'Alert' | 'Summary' | 'Other';
-  /** Valid from (parsed from message), null if not found. */
+  /** Validity-window start as ISO 8601 UTC ("Valid From"/"Begin Time" line), null if absent. */
   validFrom: string | null;
-  /** Valid to (parsed from message), null if not found. */
+  /** Validity-window end as ISO 8601 UTC ("Valid To"/"Now Valid Until"/"End Time" line), null if absent. */
   validTo: string | null;
 }

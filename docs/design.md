@@ -194,4 +194,4 @@ Product codes follow `{type}{level}{band}` convention. Key prefixes:
 
 **Scale values can be `null`** in `noaa-scales.json` when a forecast is unavailable for that period — normalize nulls to `0` (no storm) or mark as `unknown` depending on the field context.
 
-**Alerts message text:** Raw CRLF-separated text. The service should parse out the structured fields (product code, serial number, issue time, valid from/to, warning conditions) via regex on the structured lines, and preserve the full message for downstream use.
+**Alerts message text:** Raw CRLF-separated text. The service parses out the structured fields (product code, serial number, issue time, validity window, warning conditions) via regex on the structured lines, and preserves the full message for downstream use. The validity window is labeled differently per product type — `Valid From`/`Valid To` (Warnings/Watches), `Now Valid Until` (extended Warnings), and `Begin Time`/`End Time` (Alerts/Summaries) — and is normalized to ISO 8601 UTC; products carrying no time line keep `null`.

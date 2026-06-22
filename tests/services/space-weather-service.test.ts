@@ -83,9 +83,63 @@ describe('SpaceWeatherService.getAlerts', () => {
     // Verify level parsed from numeric suffix of the full code
     expect(alerts[0]!.level).toBe(4); // WARK04 → 04
 
-    // Verify validFrom/validTo extracted
-    expect(alerts[0]!.validFrom).toBe('2026 Jun 05 0434 UTC');
-    expect(alerts[0]!.validTo).toBe('2026 Jun 06 0300 UTC');
+    // Verify validFrom/validTo extracted and normalized to ISO 8601 UTC
+    expect(alerts[0]!.validFrom).toBe('2026-06-05T04:34:00Z');
+    expect(alerts[0]!.validTo).toBe('2026-06-06T03:00:00Z');
+  });
+
+  it('parses the validity window from every SWPC label variant, normalized to ISO 8601 (#10)', async () => {
+    const rawAlerts = [
+      {
+        // Extended Warning — expiry under "Now Valid Until:", not "Valid To:".
+        product_id: 'K04W',
+        issue_datetime: '2026-06-13 23:56:00.000',
+        message:
+          'Space Weather Message Code: WARK04\r\nSerial Number: 5365\r\nIssue Time: 2026 Jun 13 2356 UTC\r\n\r\nEXTENDED WARNING: Geomagnetic K-index of 4 expected\r\nExtension to Serial Number: 5364\r\nValid From: 2026 Jun 13 0126 UTC\r\nNow Valid Until: 2026 Jun 14 0600 UTC\r\nWarning Condition: Persistence\r\n',
+      },
+      {
+        // Summary — event window under "Begin Time:" / "End Time:"; "Maximum Time:" ignored.
+        product_id: 'XM5S',
+        issue_datetime: '2026-06-21 19:48:00.000',
+        message:
+          'Space Weather Message Code: SUMXM5\r\nSerial Number: 319\r\nIssue Time: 2026 Jun 21 1948 UTC\r\n\r\nSUMMARY: X-ray Event exceeded M5\r\nBegin Time: 2026 Jun 21 1917 UTC\r\nMaximum Time: 2026 Jun 21 1929 UTC\r\nEnd Time: 2026 Jun 21 1935 UTC\r\nXray Class: M6.8\r\n',
+      },
+      {
+        // Alert with onset only — "Begin Time:" present, no end line → validTo null.
+        product_id: 'TIIA',
+        issue_datetime: '2026-06-21 19:51:00.000',
+        message:
+          'Space Weather Message Code: ALTTP2\r\nSerial Number: 1507\r\nIssue Time: 2026 Jun 21 1951 UTC\r\n\r\nALERT: Type II Radio Emission\r\nBegin Time: 2026 Jun 21 1932 UTC\r\nEstimate Velocity: 380 km/s\r\n',
+      },
+      {
+        // Cancellation — no validity window; "Original Issue Time" must NOT read as a start.
+        product_id: 'TIIA',
+        issue_datetime: '2026-06-20 04:06:00.000',
+        message:
+          'Space Weather Message Code: ALTTP2\r\nSerial Number: 1505\r\nIssue Time: 2026 Jun 20 0406 UTC\r\n\r\nCANCEL ALERT: Type II Radio Emission\r\nCancel Serial Number: 1504\r\nOriginal Issue Time: 2026 Jun 20 0403 UTC\r\n',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(rawAlerts));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    // Extended Warning — "Now Valid Until:" populates validTo (was always null before #10).
+    expect(alerts[0]!.validFrom).toBe('2026-06-13T01:26:00Z');
+    expect(alerts[0]!.validTo).toBe('2026-06-14T06:00:00Z');
+
+    // Summary — "Begin Time:" / "End Time:" populate the window; "Maximum Time:" is not read.
+    expect(alerts[1]!.validFrom).toBe('2026-06-21T19:17:00Z');
+    expect(alerts[1]!.validTo).toBe('2026-06-21T19:35:00Z');
+
+    // Alert with onset only — start populated, end stays null.
+    expect(alerts[2]!.validFrom).toBe('2026-06-21T19:32:00Z');
+    expect(alerts[2]!.validTo).toBeNull();
+
+    // Cancellation — no validity lines; "Original Issue Time" is not a start.
+    expect(alerts[3]!.validFrom).toBeNull();
+    expect(alerts[3]!.validTo).toBeNull();
   });
 
   it('falls back to product_id parsing when message has no message-code line', async () => {
