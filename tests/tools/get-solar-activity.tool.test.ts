@@ -238,4 +238,47 @@ describe('getSolarActivity', () => {
     // Scientific notation with 2 significant digits appears in content[]
     expect(text).toContain('W/m²');
   });
+
+  it('rounds proton flux to 3 significant figures, not a raw float (issue #8)', async () => {
+    const svc = {
+      getXrayFlux: vi.fn().mockResolvedValue([]),
+      getSolarProbabilities: vi.fn().mockResolvedValue([]),
+      // Full-precision IEEE-754 value as returned raw by the GOES feed.
+      getProtonFlux: vi.fn().mockResolvedValue([makeProtonReading(0.2243340015411377)]),
+      getSolarRegions: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const input = getSolarActivity.input.parse({});
+    const result = await getSolarActivity.handler(input, ctx);
+
+    // fluxPfu stays a number, rounded to 3 sig figs — not the raw 16-digit float.
+    expect(result.latestProton!.fluxPfu).toBe(0.224);
+    expect(typeof result.latestProton!.fluxPfu).toBe('number');
+
+    // The full-precision float must not leak into the rendered content[].
+    const text = (getSolarActivity.format!(result)[0] as { text: string }).text;
+    expect(text).not.toContain('0.2243340015411377');
+    expect(text).toContain('0.224 pfu');
+  });
+
+  it('rounds large proton flux to 3 significant figures without scientific notation (issue #8)', async () => {
+    const svc = {
+      getXrayFlux: vi.fn().mockResolvedValue([]),
+      getSolarProbabilities: vi.fn().mockResolvedValue([]),
+      getProtonFlux: vi.fn().mockResolvedValue([makeProtonReading(1234.5678)]), // S3 range (≥1000)
+      getSolarRegions: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const input = getSolarActivity.input.parse({});
+    const result = await getSolarActivity.handler(input, ctx);
+
+    // toPrecision(3) on a large value rounds the magnitude but stays a plain number.
+    expect(result.latestProton!.fluxPfu).toBe(1230);
+    // S-scale is classified from the raw value, unaffected by display rounding.
+    expect(result.latestProton!.sScale).toBe(3);
+  });
 });

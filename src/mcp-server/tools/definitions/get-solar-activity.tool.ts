@@ -22,6 +22,16 @@ function formatFlux(fluxWm2: number): string {
   return fluxWm2.toExponential(1) + ' W/m²';
 }
 
+/**
+ * Round integral proton flux to 3 significant figures. Raw GOES values carry
+ * ~16 digits of IEEE-754 noise (e.g. 0.2243340015411377); pfu are read as plain
+ * decimals across the S-scale range, so a rounded number (not a string) is the
+ * sensible form — 0.224, 151, 12300.
+ */
+function roundProtonFlux(fluxPfu: number): number {
+  return Number(fluxPfu.toPrecision(3));
+}
+
 /** Classify proton flux to NOAA S-scale. */
 function classifySScale(fluxPfu: number): number {
   if (fluxPfu >= 100000) return 5;
@@ -74,7 +84,11 @@ const ProbsSchema = z
 const ProtonSchema = z
   .object({
     timeTag: z.string().describe('ISO 8601 measurement time tag.'),
-    fluxPfu: z.number().describe('Integral proton flux in particle flux units (pfu) at ≥10 MeV.'),
+    fluxPfu: z
+      .number()
+      .describe(
+        'Integral proton flux in particle flux units (pfu) at ≥10 MeV, rounded to 3 significant figures.',
+      ),
     sScale: z.number().describe('NOAA S-scale level (0–5) for this flux reading.'),
     energy: z.string().describe('Energy channel, e.g. ">=10 MeV".'),
   })
@@ -185,7 +199,8 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     const latestProton = latestProtonRaw
       ? {
           timeTag: latestProtonRaw.timeTag,
-          fluxPfu: latestProtonRaw.fluxPfu,
+          // S-scale is classified from the raw value above; round only for display.
+          fluxPfu: roundProtonFlux(latestProtonRaw.fluxPfu),
           sScale,
           energy: latestProtonRaw.energy,
         }
