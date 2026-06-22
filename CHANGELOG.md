@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-06-22
+
+get_alerts validity window populated from all SWPC label variants as ISO 8601; get_solar_activity proton flux rounded to 3 significant figures
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-06-20
 
 Maintenance: mcp-ts-core ^0.10.9 adoption — check-dependency-specifiers + plugin-manifest devcheck guards, fresh-scaffold check fixes, vendored skill re-sync, .codex-plugin longDescription
