@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-06-30
+
+get_alerts active_only now drops warnings whose validTo has elapsed and gains a messageCode field carrying the full SWPC code; get_kp_index timeTag values normalized to explicit UTC (Z)
+
 ## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-06-22
 
 get_alerts validity window populated from all SWPC label variants as ISO 8601; get_solar_activity proton flux rounded to 3 significant figures
