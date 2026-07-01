@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-06-30 · 🛡️ Security
+
+get_solar_activity gains date-neutral flare-probability aliases alongside the *1Day fields; get_kp_index and get_solar_activity window filters switch to epoch comparison; SWPC User-Agent tracks the package version; mcp-ts-core ^0.10.10 clears the moderate js-yaml advisory (GHSA-h67p-54hq-rp68)
+
 ## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-06-30
 
 get_alerts active_only now drops warnings whose validTo has elapsed and gains a messageCode field carrying the full SWPC code; get_kp_index timeTag values normalized to explicit UTC (Z)
