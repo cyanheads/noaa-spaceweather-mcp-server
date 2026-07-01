@@ -4,7 +4,7 @@
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ProtonFlux,
   SolarProbabilities,
@@ -40,8 +40,28 @@ function makeProtonReading(flux: number): ProtonFlux {
 }
 
 const mockProbabilities: SolarProbabilities[] = [
-  { date: '2026-06-04', cClass1Day: 55, mClass1Day: 20, xClass1Day: 5, protons1Day: 5 },
-  { date: '2026-06-05', cClass1Day: 50, mClass1Day: 15, xClass1Day: 3, protons1Day: 3 },
+  {
+    date: '2026-06-04',
+    cClass1Day: 55,
+    cClassProbability: 55,
+    mClass1Day: 20,
+    mClassProbability: 20,
+    xClass1Day: 5,
+    xClassProbability: 5,
+    protons1Day: 5,
+    protonEventProbability: 5,
+  },
+  {
+    date: '2026-06-05',
+    cClass1Day: 50,
+    cClassProbability: 50,
+    mClass1Day: 15,
+    mClassProbability: 15,
+    xClass1Day: 3,
+    xClassProbability: 3,
+    protons1Day: 3,
+    protonEventProbability: 3,
+  },
 ];
 
 const mockRegion: SolarRegion = {
@@ -61,6 +81,11 @@ const mockRegion: SolarRegion = {
 describe('getSolarActivity', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    // Restore real timers after the fake-timer boundary test (#17).
+    vi.useRealTimers();
   });
 
   it('returns flare classification and S-scale for normal conditions', async () => {
@@ -172,7 +197,17 @@ describe('getSolarActivity', () => {
         { timeTag: '2026-06-04T14:00:00Z', fluxWm2: '1.2e-4 W/m²', flareClass: 'X', satellite: 18 },
       ],
       probabilities: [
-        { date: '2026-06-04', cClass1Day: 55, mClass1Day: 20, xClass1Day: 5, protons1Day: 5 },
+        {
+          date: '2026-06-04',
+          cClass1Day: 55,
+          cClassProbability: 55,
+          mClass1Day: 20,
+          mClassProbability: 20,
+          xClass1Day: 5,
+          xClassProbability: 5,
+          protons1Day: 5,
+          protonEventProbability: 5,
+        },
       ],
       latestProton: {
         timeTag: '2026-06-04T14:00:00Z',
@@ -280,5 +315,64 @@ describe('getSolarActivity', () => {
     expect(result.latestProton!.fluxPfu).toBe(1230);
     // S-scale is classified from the raw value, unaffected by display rounding.
     expect(result.latestProton!.sScale).toBe(3);
+  });
+
+  it('exposes date-neutral probability aliases alongside the *1Day fields (#16)', async () => {
+    const svc = {
+      getXrayFlux: vi.fn().mockResolvedValue([]),
+      getSolarProbabilities: vi.fn().mockResolvedValue(mockProbabilities),
+      getProtonFlux: vi.fn().mockResolvedValue([]),
+      getSolarRegions: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const input = getSolarActivity.input.parse({});
+    const result = await getSolarActivity.handler(input, ctx);
+
+    expect(result.probabilities).toHaveLength(mockProbabilities.length);
+    for (const p of result.probabilities) {
+      // date-neutral aliases mirror the legacy *1Day values
+      expect(p.cClassProbability).toBe(p.cClass1Day);
+      expect(p.mClassProbability).toBe(p.mClass1Day);
+      expect(p.xClassProbability).toBe(p.xClass1Day);
+      expect(p.protonEventProbability).toBe(p.protons1Day);
+      // legacy fields still present (additive, non-breaking)
+      expect(typeof p.cClass1Day).toBe('number');
+      expect(typeof p.protons1Day).toBe('number');
+    }
+    // concrete values flow through from the fixture
+    expect(result.probabilities[0]!.cClassProbability).toBe(55);
+    expect(result.probabilities[0]!.protonEventProbability).toBe(5);
+  });
+
+  it('excludes an X-ray reading whose true time is just before the past-hour cutoff, where string compare would wrongly include it (#17)', async () => {
+    vi.useFakeTimers();
+    // Cutoff carries ms (toISOString); real X-ray timeTags never do. With now at
+    // .500, the past-hour cutoff is 05:00:00.500Z and a real 05:00:00Z reading is
+    // 500ms before it. Old string compare ('..00Z' >= '..00.500Z') → true (wrong);
+    // epoch compare correctly excludes it.
+    vi.setSystemTime(new Date('2026-06-24T06:00:00.500Z'));
+    const boundaryTag = '2026-06-24T05:00:00Z'; // real no-ms shape, 500ms before the cutoff
+    const insideTag = '2026-06-24T05:30:00Z'; // clearly within the past hour
+    const svc = {
+      getXrayFlux: vi.fn().mockResolvedValue([
+        { timeTag: boundaryTag, satellite: 18, fluxWm2: 1e-6, energy: '0.1-0.8nm' },
+        { timeTag: insideTag, satellite: 18, fluxWm2: 2e-6, energy: '0.1-0.8nm' },
+      ]),
+      getSolarProbabilities: vi.fn().mockResolvedValue([]),
+      getProtonFlux: vi.fn().mockResolvedValue([]),
+      getSolarRegions: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const input = getSolarActivity.input.parse({});
+    const result = await getSolarActivity.handler(input, ctx);
+
+    const recentTimes = result.recentXray.map((r) => r.timeTag);
+    expect(recentTimes).not.toContain(boundaryTag); // excluded: true time is before the cutoff
+    expect(recentTimes).toContain(insideTag);
+    expect(result.recentXray).toHaveLength(1);
   });
 });

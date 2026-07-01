@@ -74,10 +74,30 @@ const SolarRegionSchema = z
 const ProbsSchema = z
   .object({
     date: z.string().describe('Forecast date.'),
-    cClass1Day: z.number().describe('Total probability of a C-class flare for this day (%).'),
-    mClass1Day: z.number().describe('Total probability of an M-class flare for this day (%).'),
-    xClass1Day: z.number().describe('Total probability of an X-class flare for this day (%).'),
-    protons1Day: z.number().describe('Probability of ≥10 MeV proton event for this day (%).'),
+    cClass1Day: z.number().describe('Total probability of a C-class flare for this date (%).'),
+    cClassProbability: z
+      .number()
+      .describe(
+        'Total probability of a C-class flare for this date (%). Date-neutral alias of cClass1Day.',
+      ),
+    mClass1Day: z.number().describe('Total probability of an M-class flare for this date (%).'),
+    mClassProbability: z
+      .number()
+      .describe(
+        'Total probability of an M-class flare for this date (%). Date-neutral alias of mClass1Day.',
+      ),
+    xClass1Day: z.number().describe('Total probability of an X-class flare for this date (%).'),
+    xClassProbability: z
+      .number()
+      .describe(
+        'Total probability of an X-class flare for this date (%). Date-neutral alias of xClass1Day.',
+      ),
+    protons1Day: z.number().describe('Probability of a ≥10 MeV proton event for this date (%).'),
+    protonEventProbability: z
+      .number()
+      .describe(
+        'Probability of a ≥10 MeV proton event for this date (%). Date-neutral alias of protons1Day.',
+      ),
   })
   .describe('Solar flare probability forecast for one day.');
 
@@ -170,12 +190,15 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
         }
       : null;
 
-    // Recent X-ray — last hour
+    // Recent X-ray — last hour. Compare epochs, not raw ISO strings: X-ray
+    // timeTags carry no fractional seconds while toISOString() always emits
+    // .mmm, so lexicographic >= disagrees with true chronology at the window
+    // boundary (same class of bug already fixed in get-alerts, #17).
     const hourCutoff = new Date();
     hourCutoff.setHours(hourCutoff.getHours() - 1);
-    const hourCutoffIso = hourCutoff.toISOString();
+    const hourCutoffMs = hourCutoff.getTime();
     const recentXray = xray
-      .filter((r) => r.timeTag >= hourCutoffIso)
+      .filter((r) => new Date(r.timeTag).getTime() >= hourCutoffMs)
       .map((r) => ({
         timeTag: r.timeTag,
         fluxWm2: formatFlux(r.fluxWm2),
@@ -212,9 +235,13 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       probabilities: probs.map((p) => ({
         date: p.date,
         cClass1Day: p.cClass1Day,
+        cClassProbability: p.cClassProbability,
         mClass1Day: p.mClass1Day,
+        mClassProbability: p.mClassProbability,
         xClass1Day: p.xClass1Day,
+        xClassProbability: p.xClassProbability,
         protons1Day: p.protons1Day,
+        protonEventProbability: p.protonEventProbability,
       })),
       latestProton,
       sScale,
@@ -269,7 +296,12 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('### Flare Probabilities (3-day forecast)');
       for (const p of result.probabilities) {
         lines.push(
-          `**${p.date}:** C=${p.cClass1Day}% | M=${p.mClass1Day}% | X=${p.xClass1Day}% | Proton=${p.protons1Day}%`,
+          `**${p.date}:** C=${p.cClassProbability}% | M=${p.mClassProbability}% | X=${p.xClassProbability}% | Proton=${p.protonEventProbability}%`,
+        );
+        // The legacy *1Day fields carry the same values; rendered so content[]
+        // stays in parity with structuredContent across both field namings (#16).
+        lines.push(
+          `  (legacy: cClass1Day=${p.cClass1Day}% mClass1Day=${p.mClass1Day}% xClass1Day=${p.xClass1Day}% protons1Day=${p.protons1Day}%)`,
         );
       }
     }

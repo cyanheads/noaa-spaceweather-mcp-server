@@ -18,8 +18,10 @@ import { SpaceWeatherService } from '@/services/space-weather/space-weather-serv
 
 const mockFetch = vi.mocked(fetchWithTimeout);
 
-function makeService(): SpaceWeatherService {
-  return new SpaceWeatherService({} as never, {} as never);
+function makeService(version = '0.0.0-test'): SpaceWeatherService {
+  // Only mcpServerVersion is read (to build the SWPC User-Agent); the rest of
+  // AppConfig is irrelevant to this keyless feed client.
+  return new SpaceWeatherService({ mcpServerVersion: version } as never, {} as never);
 }
 
 function makeResponse(body: unknown): Response {
@@ -361,5 +363,101 @@ describe('SpaceWeatherService Kp feeds (timeTag normalization #13)', () => {
     expect(fc[0]!.timeTag).toBe('2026-06-28T03:00:00Z');
     expect(fc[1]!.timeTag).toBe('2026-06-28T06:00:00Z');
     expect(fc.every((f) => f.timeTag.endsWith('Z'))).toBe(true);
+  });
+});
+
+describe('SpaceWeatherService User-Agent (#15)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('derives the SWPC User-Agent from the injected server version, not a hardcoded release', async () => {
+    mockFetch.mockResolvedValue(makeResponse([]));
+
+    const svc = makeService('9.9.9');
+    const ctx = createMockContext();
+    await svc.getKpObserved(ctx as never);
+
+    // fetchWithTimeout(url, timeoutMs, reqCtx, { signal, headers }) — options is arg 4.
+    const opts = mockFetch.mock.calls[0]![3] as { headers: Record<string, string> };
+    const ua = opts.headers['User-Agent']!;
+
+    // Tracks the running version rather than the stale hardcoded 0.1.1.
+    expect(ua).toBe(
+      'noaa-spaceweather-mcp-server/9.9.9 (github.com/cyanheads/noaa-spaceweather-mcp-server)',
+    );
+    expect(ua).not.toContain('0.1.1');
+    // Product token and contact URL are preserved; only the version is dynamic.
+    expect(ua.startsWith('noaa-spaceweather-mcp-server/9.9.9')).toBe(true);
+    expect(ua).toContain('(github.com/cyanheads/noaa-spaceweather-mcp-server)');
+  });
+});
+
+describe('SpaceWeatherService.getSolarProbabilities (#16)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('expands the latest entry into a 3-day outlook with date-neutral aliases mirroring the *1Day fields', async () => {
+    const raw = [
+      {
+        date: '2026-06-04T00:00:00',
+        c_class_1_day: 99,
+        c_class_2_day: 80,
+        c_class_3_day: 70,
+        m_class_1_day: 50,
+        m_class_2_day: 40,
+        m_class_3_day: 30,
+        x_class_1_day: 10,
+        x_class_2_day: 8,
+        x_class_3_day: 5,
+        '10mev_protons_1_day': 5,
+        '10mev_protons_2_day': 4,
+        '10mev_protons_3_day': 3,
+      },
+      // Older archive entry — must be ignored; only index 0 drives the outlook.
+      {
+        date: '2026-06-03T00:00:00',
+        c_class_1_day: 1,
+        m_class_1_day: 1,
+        x_class_1_day: 1,
+        '10mev_protons_1_day': 1,
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(raw));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const probs = await svc.getSolarProbabilities(ctx as never);
+
+    expect(probs).toHaveLength(3);
+
+    // Every record carries date-neutral aliases equal to the legacy *1Day fields,
+    // and the legacy fields remain present (additive, non-breaking).
+    for (const p of probs) {
+      expect(p.cClassProbability).toBe(p.cClass1Day);
+      expect(p.mClassProbability).toBe(p.mClass1Day);
+      expect(p.xClassProbability).toBe(p.xClass1Day);
+      expect(p.protonEventProbability).toBe(p.protons1Day);
+      expect(typeof p.cClass1Day).toBe('number');
+      expect(typeof p.protons1Day).toBe('number');
+    }
+
+    // Day 0 pulls the _1_day columns, day 1 the _2_day, day 2 the _3_day.
+    expect(probs[0]!.cClassProbability).toBe(99);
+    expect(probs[0]!.protonEventProbability).toBe(5);
+    expect(probs[1]!.cClassProbability).toBe(80);
+    expect(probs[1]!.mClassProbability).toBe(40);
+    expect(probs[2]!.cClassProbability).toBe(70);
+    expect(probs[2]!.protonEventProbability).toBe(3);
+
+    // Dates advance one day per record; day 0 is the base date.
+    expect(probs[0]!.date).toBe('2026-06-04T00:00:00.000Z');
+    expect(new Date(probs[1]!.date).getTime() - new Date(probs[0]!.date).getTime()).toBe(
+      86_400_000,
+    );
+    expect(new Date(probs[2]!.date).getTime() - new Date(probs[1]!.date).getTime()).toBe(
+      86_400_000,
+    );
   });
 });

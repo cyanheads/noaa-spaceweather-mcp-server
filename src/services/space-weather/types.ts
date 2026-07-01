@@ -166,18 +166,31 @@ export interface SolarRegion {
   xFlareProbability: number;
 }
 
-/** Flare probability forecast for one day. */
+/**
+ * Flare probability forecast for one day. Each probability is exposed under both
+ * a legacy date-specific name (`*1Day`) and a date-neutral alias — the latter
+ * reads correctly for every forecast date, not just day one (#16). The two
+ * always carry the same value.
+ */
 export interface SolarProbabilities {
   /** Probability of a C-class flare (%). */
   cClass1Day: number;
+  /** Probability of a C-class flare (%). Date-neutral alias of cClass1Day. */
+  cClassProbability: number;
   /** Forecast date. */
   date: string;
   /** Probability of an M-class flare (%). */
   mClass1Day: number;
+  /** Probability of an M-class flare (%). Date-neutral alias of mClass1Day. */
+  mClassProbability: number;
+  /** Probability of a ≥10 MeV proton event (%). Date-neutral alias of protons1Day. */
+  protonEventProbability: number;
   /** Probability of ≥10 MeV proton event (%). */
   protons1Day: number;
   /** Probability of an X-class flare (%). */
   xClass1Day: number;
+  /** Probability of an X-class flare (%). Date-neutral alias of xClass1Day. */
+  xClassProbability: number;
 }
 
 /** One integral proton flux reading from GOES. */

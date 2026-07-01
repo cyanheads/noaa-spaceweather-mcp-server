@@ -89,11 +89,14 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
     const svc = getSpaceWeatherService();
     const [allObs, forecast] = await Promise.all([svc.getKpObserved(ctx), svc.getKpForecast(ctx)]);
 
-    // Slice to the requested window
+    // Slice to the requested window. Compare epochs, not raw ISO strings: Kp
+    // timeTags carry no fractional seconds while toISOString() always emits
+    // .mmm, so lexicographic >= disagrees with true chronology at the window
+    // boundary (same class of bug already fixed in get-alerts, #17).
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - input.window_days);
-    const cutoffIso = cutoff.toISOString();
-    const observed = allObs.filter((r) => r.timeTag >= cutoffIso);
+    const cutoffMs = cutoff.getTime();
+    const observed = allObs.filter((r) => new Date(r.timeTag).getTime() >= cutoffMs);
 
     const latest = observed.length > 0 ? observed[observed.length - 1] : null;
     const currentKp = latest?.kp ?? 0;

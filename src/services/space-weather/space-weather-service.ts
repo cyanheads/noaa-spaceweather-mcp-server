@@ -29,9 +29,16 @@ import type {
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const BASE_URL = 'https://services.swpc.noaa.gov';
-const USER_AGENT =
-  'noaa-spaceweather-mcp-server/0.1.1 (github.com/cyanheads/noaa-spaceweather-mcp-server)';
 const FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Build the SWPC User-Agent from the running server version so it tracks
+ * package.json instead of a hardcoded release that silently drifts on each bump.
+ * Product token and contact URL are fixed; only the version is dynamic.
+ */
+function buildUserAgent(version: string): string {
+  return `noaa-spaceweather-mcp-server/${version} (github.com/cyanheads/noaa-spaceweather-mcp-server)`;
+}
 
 /** Missing/fill value used in many SWPC feeds for sensor failures. */
 const FILL_VALUE = -9999;
@@ -68,7 +75,7 @@ function gScaleToAuroraLatitude(gScale: number): string {
 
 // ── Shared fetch helper ─────────────────────────────────────────────────────
 
-async function fetchFeed<T>(path: string, ctx: Context): Promise<T> {
+async function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T> {
   // Cast ctx to RequestContext for framework utils — Context is structurally
   // compatible but lacks the index signature the type expects.
   const reqCtx = ctx as unknown as RequestContext;
@@ -77,7 +84,7 @@ async function fetchFeed<T>(path: string, ctx: Context): Promise<T> {
       const url = `${BASE_URL}${path}`;
       const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, reqCtx, {
         signal: ctx.signal,
-        headers: { 'User-Agent': USER_AGENT },
+        headers: { 'User-Agent': userAgent },
       });
       const text = await response.text();
       if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
@@ -328,15 +335,27 @@ interface RawAlert {
 
 /** NOAA SWPC public feeds client. Initialized once; accessed via accessor. */
 export class SpaceWeatherService {
-  // config and storage are accepted per the service contract but not used by this
-  // keyless, stateless feed client.
-  constructor(_config: AppConfig, _storage: StorageService) {}
+  /**
+   * SWPC User-Agent, built once from the injected server version so it tracks
+   * package.json instead of a hardcoded release.
+   */
+  private readonly userAgent: string;
+
+  // storage is accepted per the service contract but unused by this keyless,
+  // stateless feed client; config supplies only the server version for the UA.
+  constructor(config: AppConfig, _storage: StorageService) {
+    this.userAgent = buildUserAgent(config.mcpServerVersion);
+  }
 
   // ── NOAA Scales ────────────────────────────────────────────────────────
 
   /** Fetch current NOAA storm scales (today + 3-day forecast). */
   async getNoaaScales(ctx: Context): Promise<NoaaScalesData> {
-    const raw = await fetchFeed<Record<string, RawScalesPeriod>>('/products/noaa-scales.json', ctx);
+    const raw = await fetchFeed<Record<string, RawScalesPeriod>>(
+      '/products/noaa-scales.json',
+      ctx,
+      this.userAgent,
+    );
 
     const normalizePeriod = (r: RawScalesPeriod): NoaaScalesPeriod => ({
       date: r.DateStamp ?? '',
@@ -382,7 +401,11 @@ export class SpaceWeatherService {
 
   /** Fetch observed Kp index history. */
   async getKpObserved(ctx: Context): Promise<KpObservation[]> {
-    const raw = await fetchFeed<RawKpObserved[]>('/products/noaa-planetary-k-index.json', ctx);
+    const raw = await fetchFeed<RawKpObserved[]>(
+      '/products/noaa-planetary-k-index.json',
+      ctx,
+      this.userAgent,
+    );
     return raw.map((r) => {
       const kp = parseNum(r.Kp) ?? 0;
       const gScale = kpToGScale(kp);
@@ -402,6 +425,7 @@ export class SpaceWeatherService {
     const raw = await fetchFeed<RawKpForecast[]>(
       '/products/noaa-planetary-k-index-forecast.json',
       ctx,
+      this.userAgent,
     );
     return raw.map((r) => ({
       timeTag: normalizeSwpcTime(r.time_tag),
@@ -415,7 +439,11 @@ export class SpaceWeatherService {
 
   /** Fetch the latest OVATION aurora forecast grid. */
   async getAuroraForecast(ctx: Context): Promise<AuroraForecastData> {
-    const raw = await fetchFeed<RawAuroraFeed>('/json/ovation_aurora_latest.json', ctx);
+    const raw = await fetchFeed<RawAuroraFeed>(
+      '/json/ovation_aurora_latest.json',
+      ctx,
+      this.userAgent,
+    );
     return {
       meta: {
         observationTime: raw['Observation Time'] ?? '',
@@ -436,7 +464,11 @@ export class SpaceWeatherService {
 
   /** Fetch solar wind plasma (7-day, array-of-arrays format). */
   async getSolarWindPlasma(ctx: Context): Promise<SolarWindPlasma[]> {
-    const raw = await fetchFeed<string[][]>('/products/solar-wind/plasma-7-day.json', ctx);
+    const raw = await fetchFeed<string[][]>(
+      '/products/solar-wind/plasma-7-day.json',
+      ctx,
+      this.userAgent,
+    );
     const rows = normalizeArrayOfArrays(raw);
     return rows.map((r) => ({
       timeTag: normalizeSwpcTime(r['time_tag'] ?? ''),
@@ -448,7 +480,11 @@ export class SpaceWeatherService {
 
   /** Fetch solar wind magnetic field (7-day, array-of-arrays format). */
   async getSolarWindMag(ctx: Context): Promise<SolarWindMag[]> {
-    const raw = await fetchFeed<string[][]>('/products/solar-wind/mag-7-day.json', ctx);
+    const raw = await fetchFeed<string[][]>(
+      '/products/solar-wind/mag-7-day.json',
+      ctx,
+      this.userAgent,
+    );
     const rows = normalizeArrayOfArrays(raw);
     return rows.map((r) => ({
       timeTag: normalizeSwpcTime(r['time_tag'] ?? ''),
@@ -463,7 +499,11 @@ export class SpaceWeatherService {
 
   /** Fetch GOES X-ray flux (7-day, long-channel 0.1-0.8nm only). */
   async getXrayFlux(ctx: Context): Promise<XrayFlux[]> {
-    const raw = await fetchFeed<RawXrayFlux[]>('/json/goes/primary/xrays-7-day.json', ctx);
+    const raw = await fetchFeed<RawXrayFlux[]>(
+      '/json/goes/primary/xrays-7-day.json',
+      ctx,
+      this.userAgent,
+    );
     return raw
       .filter((r) => r.energy === '0.1-0.8nm')
       .map((r) => ({
@@ -476,7 +516,7 @@ export class SpaceWeatherService {
 
   /** Fetch active solar regions (most recent observed date only). */
   async getSolarRegions(ctx: Context): Promise<SolarRegion[]> {
-    const raw = await fetchFeed<RawSolarRegion[]>('/json/solar_regions.json', ctx);
+    const raw = await fetchFeed<RawSolarRegion[]>('/json/solar_regions.json', ctx, this.userAgent);
     // The feed contains ~30 days of region history in reverse-chrono order.
     // Filter to the most recent observed_date to return only currently active regions.
     const mostRecentDate = raw.length > 0 ? raw[0]?.observed_date : null;
@@ -507,7 +547,11 @@ export class SpaceWeatherService {
 
   /** Fetch solar flare probabilities (3-day forward outlook from the latest issued entry). */
   async getSolarProbabilities(ctx: Context): Promise<SolarProbabilities[]> {
-    const raw = await fetchFeed<RawSolarProbs[]>('/json/solar_probabilities.json', ctx);
+    const raw = await fetchFeed<RawSolarProbs[]>(
+      '/json/solar_probabilities.json',
+      ctx,
+      this.userAgent,
+    );
     // The feed is a 30-entry reverse-chrono archive of daily forecasts.
     // Each entry embeds a 3-day outlook via _1_day / _2_day / _3_day columns.
     // Take only the most recent entry (index 0) and expand its 3-day outlook
@@ -522,13 +566,23 @@ export class SpaceWeatherService {
       const d = new Date(baseDate);
       d.setDate(d.getDate() + dayOffset);
       const suffix = dayOffset === 0 ? '1_day' : dayOffset === 1 ? '2_day' : '3_day';
+      // Parse each probability once, then expose it under both the legacy
+      // date-specific name and the date-neutral alias (#16) so the two never drift.
+      const cClass = parseNum(latest[`c_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0;
+      const mClass = parseNum(latest[`m_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0;
+      const xClass = parseNum(latest[`x_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0;
+      const protons =
+        parseNum(latest[`10mev_protons_${suffix}` as keyof RawSolarProbs] as string) ?? 0;
       return {
         date: d.toISOString(),
-        cClass1Day: parseNum(latest[`c_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0,
-        mClass1Day: parseNum(latest[`m_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0,
-        xClass1Day: parseNum(latest[`x_class_${suffix}` as keyof RawSolarProbs] as string) ?? 0,
-        protons1Day:
-          parseNum(latest[`10mev_protons_${suffix}` as keyof RawSolarProbs] as string) ?? 0,
+        cClass1Day: cClass,
+        cClassProbability: cClass,
+        mClass1Day: mClass,
+        mClassProbability: mClass,
+        xClass1Day: xClass,
+        xClassProbability: xClass,
+        protons1Day: protons,
+        protonEventProbability: protons,
       };
     });
   }
@@ -538,6 +592,7 @@ export class SpaceWeatherService {
     const raw = await fetchFeed<RawProtonFlux[]>(
       '/json/goes/primary/integral-protons-plot-3-day.json',
       ctx,
+      this.userAgent,
     );
     return raw
       .filter((r) => r.energy === '>=10 MeV')
@@ -553,7 +608,7 @@ export class SpaceWeatherService {
 
   /** Fetch SWPC alerts, watches, and warnings. */
   async getAlerts(ctx: Context): Promise<SpaceWeatherAlert[]> {
-    const raw = await fetchFeed<RawAlert[]>('/products/alerts.json', ctx);
+    const raw = await fetchFeed<RawAlert[]>('/products/alerts.json', ctx, this.userAgent);
     return raw.map((r) => {
       const id = r.product_id ?? '';
       const message = r.message ?? '';

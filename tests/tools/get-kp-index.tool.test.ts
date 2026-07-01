@@ -4,7 +4,7 @@
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KpForecast, KpObservation } from '@/services/space-weather/types.js';
 
 // Partial mock: stub the service accessor but keep the real `kpToGScale` export,
@@ -97,6 +97,11 @@ function makeMixedForecastFeed(): KpForecast[] {
 describe('getKpIndex', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    // Restore real timers after the fake-timer boundary test (#17).
+    vi.useRealTimers();
   });
 
   it('returns observed + forecast within window_days=1 (default)', async () => {
@@ -283,5 +288,49 @@ describe('getKpIndex', () => {
     expect(text).toContain('G1');
     expect(text).toContain('Forecast');
     expect(text).toContain('Aurora possible to ~60°');
+  });
+
+  it('excludes an observed reading whose true time is just before the window cutoff, where string compare would wrongly include it (#17)', async () => {
+    vi.useFakeTimers();
+    // Cutoff carries ms (toISOString); real Kp timeTags never do. With now at .500,
+    // the 1-day cutoff is 2026-06-23T05:00:00.500Z and a real 2026-06-23T05:00:00Z
+    // reading is 500ms before it. Old string compare ('..00Z' >= '..00.500Z') → true
+    // (wrong); epoch compare correctly excludes it.
+    vi.setSystemTime(new Date('2026-06-24T05:00:00.500Z'));
+    const boundaryTag = '2026-06-23T05:00:00Z'; // real no-ms shape, 500ms before the cutoff
+    const insideTag = '2026-06-24T04:00:00Z'; // clearly within the 1-day window
+    const observations: KpObservation[] = [
+      {
+        timeTag: boundaryTag,
+        kp: 4,
+        gScale: 0,
+        auroraLatitude: 'No significant aurora expected at mid-latitudes',
+        aRunning: null,
+        stationCount: 8,
+      },
+      {
+        timeTag: insideTag,
+        kp: 5,
+        gScale: 1,
+        auroraLatitude: 'Aurora possible to ~60° geomagnetic latitude',
+        aRunning: null,
+        stationCount: 8,
+      },
+    ];
+    const svc = {
+      getKpObserved: vi.fn().mockResolvedValue(observations),
+      getKpForecast: vi.fn().mockResolvedValue([]),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getKpIndex.errors });
+    const input = getKpIndex.input.parse({ window_days: 1 });
+    const result = await getKpIndex.handler(input, ctx);
+
+    const times = result.observed.map((r) => r.timeTag);
+    expect(times).not.toContain(boundaryTag); // excluded: true time is before the cutoff
+    expect(times).toContain(insideTag);
+    expect(result.observedCount).toBe(1);
+    expect(result.currentKp).toBe(5); // latest in-window reading
   });
 });
