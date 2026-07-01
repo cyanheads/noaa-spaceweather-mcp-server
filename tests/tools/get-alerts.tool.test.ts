@@ -18,14 +18,17 @@ const mockGetSpaceWeatherService = vi.mocked(getSpaceWeatherService);
 
 function makeAlert(overrides: Partial<SpaceWeatherAlert> = {}): SpaceWeatherAlert {
   return {
-    productId: 'WARK04',
+    productId: 'K04W',
+    messageCode: 'WARK04',
     productType: 'Warning',
     level: 4,
     issueDatetime: '2026-06-04T12:00:00Z',
     message: 'Geomagnetic K-index of 4 expected.',
     phenomenon: 'Geomagnetic',
     validFrom: '2026-06-04T12:00:00Z',
-    validTo: '2026-06-04T23:59:00Z',
+    // Default to a still-in-force window so active_only tests that don't target
+    // validTo aren't dropped by the elapsed-validity filter (regression #12).
+    validTo: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     ...overrides,
   };
 }
@@ -56,6 +59,78 @@ describe('getAlerts', () => {
     expect(result.totalCount).toBe(1);
     expect(result.alerts[0]!.productType).toBe('Warning');
     expect(result.alerts.every((a) => a.productType !== 'Summary')).toBe(true);
+  });
+
+  it('active_only=true drops expired-validTo Warnings but keeps future and null-validTo products (regression #12)', async () => {
+    const recentIssue = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h ago, within window
+    const expiredValidTo = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(); // elapsed 1h ago
+    const futureValidTo = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(); // in force 6h more
+    const alerts: SpaceWeatherAlert[] = [
+      // Warning already expired — must be excluded despite a recent issue time.
+      makeAlert({
+        productId: 'EXPW',
+        messageCode: 'WARK04',
+        productType: 'Warning',
+        issueDatetime: recentIssue,
+        validTo: expiredValidTo,
+      }),
+      // Warning still in force — must be kept.
+      makeAlert({
+        productId: 'FUTW',
+        messageCode: 'WARK05',
+        productType: 'Warning',
+        issueDatetime: recentIssue,
+        validTo: futureValidTo,
+      }),
+      // Watch with no validTo (point-in-time notice) — recency window is its only
+      // filter, so it is kept.
+      makeAlert({
+        productId: 'NULW',
+        messageCode: 'WATA50',
+        productType: 'Watch',
+        issueDatetime: recentIssue,
+        validFrom: null,
+        validTo: null,
+      }),
+    ];
+    const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAlerts.errors });
+    const input = getAlerts.input.parse({ active_only: true, max_age_hours: 48 });
+    const result = await getAlerts.handler(input, ctx);
+
+    const ids = result.alerts.map((a) => a.productId);
+    expect(ids).not.toContain('EXPW'); // expired validTo excluded
+    expect(ids).toContain('FUTW'); // future validTo kept
+    expect(ids).toContain('NULW'); // null validTo within recency window kept
+    expect(result.totalCount).toBe(2);
+  });
+
+  it('active_only=true keeps a Warning whose validTo is unparseable rather than dropping it (regression #12)', async () => {
+    const recentIssue = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h ago, within window
+    const alerts: SpaceWeatherAlert[] = [
+      // parseValidity falls back to raw upstream text when a validity line fails the
+      // strict SWPC datetime regex, so validTo can be prose Date cannot parse
+      // (getTime() → NaN). An "active" query must not silently drop an in-force
+      // warning whose end time it cannot read.
+      makeAlert({
+        productId: 'RAWW',
+        messageCode: 'WARK04',
+        productType: 'Warning',
+        issueDatetime: recentIssue,
+        validTo: 'until further notice',
+      }),
+    ];
+    const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAlerts.errors });
+    const input = getAlerts.input.parse({ active_only: true, max_age_hours: 48 });
+    const result = await getAlerts.handler(input, ctx);
+
+    expect(result.alerts.map((a) => a.productId)).toContain('RAWW');
+    expect(result.totalCount).toBe(1);
   });
 
   it('excludes alerts older than max_age_hours', async () => {
@@ -165,7 +240,8 @@ describe('getAlerts', () => {
     const output = {
       alerts: [
         {
-          productId: 'WARK04',
+          productId: 'K04W',
+          messageCode: 'WARK04',
           productType: 'Warning' as const,
           level: 4,
           phenomenon: 'Geomagnetic',
@@ -182,7 +258,8 @@ describe('getAlerts', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('Warning');
     expect(text).toContain('Geomagnetic');
-    expect(text).toContain('WARK04');
+    expect(text).toContain('WARK04'); // full message code
+    expect(text).toContain('K04W'); // short feed ID
     expect(text).toContain('K-index of 4 expected.');
     expect(text).toContain('**Total:** 1');
   });

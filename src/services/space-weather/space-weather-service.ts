@@ -126,16 +126,18 @@ function parseNum(s: string | number | null | undefined): number | null {
 }
 
 /**
- * Normalize a SWPC time tag string to ISO 8601 UTC.
- * SWPC solar-wind feeds use "YYYY-MM-DD HH:MM:SS.mmm" (space-separated, no 'Z').
- * Without normalization, `new Date(tag)` interprets the string as local time
- * rather than UTC, corrupting all time-based filtering.
+ * Normalize a SWPC time tag string to explicit ISO 8601 UTC (always ends in 'Z').
+ * SWPC emits two Z-less shapes: solar-wind and alert bodies use space-separated
+ * "YYYY-MM-DD HH:MM:SS.mmm", while the Kp feeds use T-separated
+ * "YYYY-MM-DDTHH:MM:SS". Neither carries a UTC designator, so `new Date(tag)`
+ * interprets them as local time and corrupts all time-based filtering.
+ * Short-circuits only when the value already ends in 'Z' (or isn't a string);
+ * otherwise swaps the date/time space for 'T' (a no-op when already 'T'-separated)
+ * and appends 'Z'.
  */
 function normalizeSwpcTime(tag: string): string {
-  // Replace the space between date and time with 'T' and append 'Z' if absent.
-  if (typeof tag !== 'string' || tag.includes('T')) return tag;
-  const normalized = tag.replace(' ', 'T');
-  return normalized.endsWith('Z') ? normalized : `${normalized}Z`;
+  if (typeof tag !== 'string' || tag.endsWith('Z')) return tag;
+  return `${tag.replace(' ', 'T')}Z`;
 }
 
 /** Three-letter month abbreviations used in SWPC product datetime lines. */
@@ -385,7 +387,7 @@ export class SpaceWeatherService {
       const kp = parseNum(r.Kp) ?? 0;
       const gScale = kpToGScale(kp);
       return {
-        timeTag: r.time_tag,
+        timeTag: normalizeSwpcTime(r.time_tag),
         kp,
         gScale,
         auroraLatitude: gScaleToAuroraLatitude(gScale),
@@ -402,7 +404,7 @@ export class SpaceWeatherService {
       ctx,
     );
     return raw.map((r) => ({
-      timeTag: r.time_tag,
+      timeTag: normalizeSwpcTime(r.time_tag),
       kp: parseNum(r.kp) ?? 0,
       observed: r.observed,
       noaaScale: r.noaa_scale ?? null,
@@ -564,6 +566,7 @@ export class SpaceWeatherService {
       const msgCode = msgCodeMatch?.[1] ?? id;
       return {
         productId: id,
+        messageCode: msgCode,
         productType: parseProductType(msgCode),
         level: parseLevel(msgCode),
         // Normalize SWPC's space-separated datetime ("2026-06-06 22:11:17") to ISO 8601 so

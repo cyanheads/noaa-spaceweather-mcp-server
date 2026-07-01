@@ -77,6 +77,12 @@ describe('SpaceWeatherService.getAlerts', () => {
     // Verify productId preserves original short code
     expect(alerts[0]!.productId).toBe('K04W');
 
+    // Verify messageCode carries the full parsed Space Weather Message Code (#14)
+    expect(alerts[0]!.messageCode).toBe('WARK04');
+    expect(alerts[1]!.messageCode).toBe('WATA50');
+    expect(alerts[2]!.messageCode).toBe('ALTK04');
+    expect(alerts[3]!.messageCode).toBe('SUMSUD');
+
     // Verify phenomenon parsed from message code suffix
     expect(alerts[0]!.phenomenon).toBe('Geomagnetic'); // WARK04 → core='K04' → Geomagnetic
 
@@ -86,6 +92,9 @@ describe('SpaceWeatherService.getAlerts', () => {
     // Verify validFrom/validTo extracted and normalized to ISO 8601 UTC
     expect(alerts[0]!.validFrom).toBe('2026-06-05T04:34:00Z');
     expect(alerts[0]!.validTo).toBe('2026-06-06T03:00:00Z');
+
+    // Verify space-separated issue datetime (with fractional seconds) normalized to UTC (#13)
+    expect(alerts[0]!.issueDatetime).toBe('2026-06-05T04:35:00.000Z');
   });
 
   it('parses the validity window from every SWPC label variant, normalized to ISO 8601 (#10)', async () => {
@@ -158,6 +167,25 @@ describe('SpaceWeatherService.getAlerts', () => {
 
     // Falls back to product_id — "OTHER" doesn't match any prefix → 'Other'
     expect(alerts[0]!.productType).toBe('Other');
+    // messageCode falls back to the short feed ID when no message-code line exists (#14)
+    expect(alerts[0]!.messageCode).toBe('OTHER');
+  });
+
+  it('normalizes a space-separated issue datetime without fractional seconds to explicit UTC (#13)', async () => {
+    const rawAlerts = [
+      {
+        product_id: 'K04W',
+        issue_datetime: '2026-06-06 22:11:17', // space-separated, no milliseconds, no Z
+        message: 'Space Weather Message Code: WARK04\r\nIssue Time: 2026 Jun 06 2211 UTC\r\n',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(rawAlerts));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    expect(alerts[0]!.issueDatetime).toBe('2026-06-06T22:11:17Z');
   });
 });
 
@@ -283,5 +311,55 @@ describe('SpaceWeatherService.getSolarWindMag (array-of-arrays)', () => {
     expect(mag[0]!.byGsm).toBe(2.2);
     expect(mag[0]!.bzGsm).toBe(-8.5);
     expect(mag[0]!.bt).toBe(9.0);
+  });
+});
+
+describe('SpaceWeatherService Kp feeds (timeTag normalization #13)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('normalizes T-separated (no-Z) observed Kp time tags to explicit UTC', async () => {
+    // Live Kp feed shape: "YYYY-MM-DDTHH:MM:SS" — T-separated but no trailing Z.
+    const raw = [
+      { time_tag: '2026-06-23T00:00:00', Kp: 2, a_running: 5, station_count: 8 },
+      { time_tag: '2026-06-23T03:00:00', Kp: 3, a_running: 7, station_count: 8 },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(raw));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const obs = await svc.getKpObserved(ctx as never);
+
+    expect(obs[0]!.timeTag).toBe('2026-06-23T00:00:00Z');
+    expect(obs[1]!.timeTag).toBe('2026-06-23T03:00:00Z');
+    expect(obs.every((o) => o.timeTag.endsWith('Z'))).toBe(true);
+  });
+
+  it('leaves an already-Z observed Kp time tag unchanged (idempotent)', async () => {
+    const raw = [{ time_tag: '2026-06-28T00:00:00Z', Kp: 2, a_running: 5, station_count: 8 }];
+    mockFetch.mockResolvedValue(makeResponse(raw));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const obs = await svc.getKpObserved(ctx as never);
+
+    expect(obs[0]!.timeTag).toBe('2026-06-28T00:00:00Z');
+  });
+
+  it('normalizes T-separated (no-Z) forecast Kp time tags to explicit UTC', async () => {
+    const raw = [
+      { time_tag: '2026-06-28T03:00:00', kp: 3.67, observed: 'estimated', noaa_scale: null },
+      { time_tag: '2026-06-28T06:00:00', kp: 4, observed: 'predicted', noaa_scale: 'G0' },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(raw));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const fc = await svc.getKpForecast(ctx as never);
+
+    expect(fc[0]!.timeTag).toBe('2026-06-28T03:00:00Z');
+    expect(fc[1]!.timeTag).toBe('2026-06-28T06:00:00Z');
+    expect(fc.every((f) => f.timeTag.endsWith('Z'))).toBe(true);
   });
 });

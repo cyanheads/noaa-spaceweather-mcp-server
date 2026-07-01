@@ -202,9 +202,15 @@ export interface SpaceWeatherAlert {
   level: number;
   /** Full plain-text message body. */
   message: string;
+  /**
+   * Full SWPC "Space Weather Message Code" parsed from the message body, e.g.
+   * "WARK04", "ALTEF3" — the code that drives productType, phenomenon, and level.
+   * Falls back to the short feed ID when the body carries no message-code line.
+   */
+  messageCode: string;
   /** Short parsed phenomenon, e.g. "Geomagnetic", "Radio Blackout", "Solar Radiation". */
   phenomenon: string;
-  /** Product code, e.g. "WARK04", "ALTK07", "SUMS". */
+  /** Short SWPC feed product ID, e.g. "K04W", "EF3A". See messageCode for the full code. */
   productId: string;
   /** Product type derived from the code prefix. */
   productType: 'Warning' | 'Watch' | 'Alert' | 'Summary' | 'Other';

@@ -9,7 +9,16 @@ import { getSpaceWeatherService } from '@/services/space-weather/space-weather-s
 
 const AlertSchema = z
   .object({
-    productId: z.string().describe('SWPC product code, e.g. "WARK04", "ALTK07".'),
+    productId: z
+      .string()
+      .describe(
+        'Short SWPC feed product ID, e.g. "K04W", "EF3A". See messageCode for the full code.',
+      ),
+    messageCode: z
+      .string()
+      .describe(
+        'Full SWPC "Space Weather Message Code" parsed from the message body, e.g. "WARK04", "ALTEF3" — the code that drives product type, phenomenon, and level.',
+      ),
     productType: z
       .enum(['Warning', 'Watch', 'Alert', 'Summary', 'Other'])
       .describe('Product classification derived from the code prefix.'),
@@ -89,14 +98,28 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
     // expiry; without this, active_only=true returns weeks of historical notices.
     // Compare as Date objects (epoch) — string comparison would silently fail when
     // issueDatetime and the ISO cutoff don't share the exact same format.
-    const cutoffMs = Date.now() - input.max_age_hours * 60 * 60 * 1000;
+    const nowMs = Date.now();
+    const cutoffMs = nowMs - input.max_age_hours * 60 * 60 * 1000;
     const recents = all.filter((a) => new Date(a.issueDatetime).getTime() >= cutoffMs);
 
+    // active_only admits only in-force Warnings/Watches/Alerts. A product whose
+    // parsed validTo has already elapsed is dropped; Watch/Alert notices carry no
+    // validTo (point-in-time), and a validTo we cannot parse is treated as in-force
+    // — both fall back to the recency window above, so an "active" query never
+    // silently hides a warning whose end time is missing or unreadable.
     const filtered = input.active_only
-      ? recents.filter(
-          (a) =>
-            a.productType === 'Warning' || a.productType === 'Watch' || a.productType === 'Alert',
-        )
+      ? recents.filter((a) => {
+          if (
+            a.productType !== 'Warning' &&
+            a.productType !== 'Watch' &&
+            a.productType !== 'Alert'
+          ) {
+            return false;
+          }
+          if (a.validTo === null) return true;
+          const validToMs = new Date(a.validTo).getTime();
+          return Number.isNaN(validToMs) || validToMs >= nowMs;
+        })
       : recents;
 
     if (filtered.length === 0) {
@@ -110,6 +133,7 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
     return {
       alerts: filtered.map((a) => ({
         productId: a.productId,
+        messageCode: a.messageCode,
         productType: a.productType,
         level: a.level,
         phenomenon: a.phenomenon,
@@ -136,7 +160,9 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
     } else {
       for (const alert of result.alerts) {
         lines.push('');
-        lines.push(`### [${alert.productType}] ${alert.phenomenon} — ${alert.productId}`);
+        lines.push(
+          `### [${alert.productType}] ${alert.phenomenon} — ${alert.messageCode} (${alert.productId})`,
+        );
         lines.push(`**Issued:** ${alert.issueDatetime} | **Level:** ${alert.level}`);
         if (alert.validFrom) lines.push(`**Valid From:** ${alert.validFrom}`);
         if (alert.validTo) lines.push(`**Valid To:** ${alert.validTo}`);
