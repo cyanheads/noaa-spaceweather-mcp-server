@@ -92,7 +92,7 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
     // Slice to the requested window. Compare epochs, not raw ISO strings: Kp
     // timeTags carry no fractional seconds while toISOString() always emits
     // .mmm, so lexicographic >= disagrees with true chronology at the window
-    // boundary (same class of bug already fixed in get-alerts, #17).
+    // boundary (same class of bug already fixed in get-alerts, #6).
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - input.window_days);
     const cutoffMs = cutoff.getTime();

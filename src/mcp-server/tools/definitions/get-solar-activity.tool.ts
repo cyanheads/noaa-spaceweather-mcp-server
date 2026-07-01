@@ -193,7 +193,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     // Recent X-ray — last hour. Compare epochs, not raw ISO strings: X-ray
     // timeTags carry no fractional seconds while toISOString() always emits
     // .mmm, so lexicographic >= disagrees with true chronology at the window
-    // boundary (same class of bug already fixed in get-alerts, #17).
+    // boundary (same class of bug already fixed in get-alerts, #6).
     const hourCutoff = new Date();
     hourCutoff.setHours(hourCutoff.getHours() - 1);
     const hourCutoffMs = hourCutoff.getTime();
