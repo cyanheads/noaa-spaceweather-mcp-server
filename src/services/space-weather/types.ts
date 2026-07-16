@@ -225,19 +225,39 @@ export interface ProtonFlux {
 
 /** Parsed SWPC alert/watch/warning. */
 export interface SpaceWeatherAlert {
+  /**
+   * True when this record is a cancellation notice ("CANCEL WARNING:"/"CANCEL ALERT:"
+   * headline) rather than a product in force. SWPC cancels by issuing a new record
+   * under the same message code, so this is per-record: the same code cycles between
+   * in-force and cancelled. "EXTENDED"/"CONTINUED" records are still in force and are
+   * not cancellations.
+   */
+  cancelled: boolean;
   /** ISO 8601 issue datetime. */
   issueDatetime: string;
-  /** Severity level (numeric suffix from product code, 0 when not applicable). */
+  /**
+   * NOAA scale level 0–5, read from the scale stated in the message body. 0 means the
+   * product states no NOAA scale (K4 warnings sit below the G-scale; radio-burst and
+   * electron-flux alerts sit outside the scales) — it is not a severity of zero.
+   */
   level: number;
   /** Full plain-text message body. */
   message: string;
   /**
    * Full SWPC "Space Weather Message Code" parsed from the message body, e.g.
-   * "WARK04", "ALTEF3" — the code that drives productType, phenomenon, and level.
-   * Falls back to the short feed ID when the body carries no message-code line.
+   * "WARK04", "ALTEF3". Falls back to the short feed ID when the body carries no
+   * message-code line.
    */
   messageCode: string;
-  /** Short parsed phenomenon, e.g. "Geomagnetic", "Radio Blackout", "Solar Radiation". */
+  /**
+   * NOAA scale the body states, e.g. "G1", "R2", "S1"; null when the product states
+   * none. Carries the scale letter that the numeric level alone cannot.
+   */
+  noaaScale: string | null;
+  /**
+   * Short phenomenon derived from the body's NOAA scale letter, falling back to the
+   * message code, e.g. "Geomagnetic", "Radio Blackout", "Solar Radiation".
+   */
   phenomenon: string;
   /** Short SWPC feed product ID, e.g. "K04W", "EF3A". See messageCode for the full code. */
   productId: string;

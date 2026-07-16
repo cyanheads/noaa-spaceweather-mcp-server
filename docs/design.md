@@ -156,12 +156,15 @@ Baseline infrastructure errors (`InternalError`, `Timeout`, `SerializationError`
 | Proton flux | `/json/goes/primary/integral-protons-plot-3-day.json` | Array of objects | `time_tag` (ISO Z), `satellite`, `flux` (float, pfu), `energy` (`">=10 MeV"`, `">=50 MeV"`, `">=100 MeV"`, `">=500 MeV"`) |
 | Alerts | `/products/alerts.json` | Array of objects | `product_id` (e.g. `K04W`, `A50F`, `XX0S`), `issue_datetime`, `message` (raw text with CRLF, includes machine-readable structured fields) |
 
-### Alert Product Code Taxonomy (for parsing)
+### Alert Product Parsing
 
-Product codes follow `{type}{level}{band}` convention. Key prefixes:
-- `WAR*` — Warning; `WAT*` — Watch; `ALT*` — Alert; `SUM*` — Summary
-- `G` — Geomagnetic (G-scale); `R` / `RB` — Radio Blackout; `S` — Solar Radiation; `K` — K-index warning
-- Level in numeric suffix (e.g. `K04` = K4 warning, `A50` = G-watch, `XX0` = X-ray event)
+The message code's prefix gives the product type — `WAR*` Warning, `WAT*` Watch, `ALT*` Alert, `SUM*` Summary. Everything else is read from the message body; the rest of the code is not a severity.
+
+- **Level and phenomenon come from the scale the body states** — either a `NOAA Scale: G1 - Minor` line or a Watch headline's `Category G2`. The letter gives the phenomenon (`G` Geomagnetic, `R` Radio Blackout, `S` Solar Radiation); the digit gives the level.
+- **A code's numeric suffix is not a severity.** It encodes flux thresholds (`EF3`), radio-burst types (`TP2`, `TP4`), wavelengths (`10R`), and predicted A-index (`A20`, `A30`, `A50`). Reading it as a level reports `SUM10R` as level 10 and `WATA30` as level 30.
+- **Products stating no scale resolve to level 0**, meaning "no NOAA scale" — not a severity of zero. K-index codes convert through `kpToGScale()` (K4 sits below the G-scale, so `WARK04`/`ALTK04` → 0); `ALTEF3`, `ALTTP2`, `ALTTP4`, `SUM10R`, and `WARSUD` sit outside the scales entirely.
+- **The code is a phenomenon fallback only**, keyed on its core: `A`/`G`/`K` + digit → Geomagnetic (the `A` family is a predicted-A-index storm watch, not an aurora bulletin); `SUD` → Geomagnetic (Sudden Impulse — its leading `S` is not the solar-radiation scale letter); `X`/`R` → Radio Blackout; `PX`/`S` → Solar Radiation.
+- **The scale label is matched case-insensitively and without a line anchor.** SWPC emits both `NOAA Scale:` and `Noaa Scale:`, and sometimes glues correction prose straight onto the label with no line break (`...valid until 12/2100 UTC.NOAA Scale: G1 - Minor`).
 
 ### NOAA Scale Reference
 
@@ -203,3 +206,5 @@ Product codes follow `{type}{level}{band}` convention. Key prefixes:
 **Scale values can be `null`** in `noaa-scales.json` when a forecast is unavailable for that period — normalize nulls to `0` (no storm) or mark as `unknown` depending on the field context.
 
 **Alerts message text:** Raw CRLF-separated text. The service parses out the structured fields (product code, serial number, issue time, validity window, warning conditions) via regex on the structured lines, and preserves the full message for downstream use. The validity window is labeled differently per product type — `Valid From`/`Valid To` (Warnings/Watches), `Now Valid Until` (extended Warnings), and `Begin Time`/`End Time` (Alerts/Summaries) — and is normalized to ISO 8601 UTC; products carrying no time line keep `null`.
+
+**Alert cancellations:** SWPC cancels a product by issuing a new record under the same message code with a `CANCEL WARNING:`/`CANCEL ALERT:` headline. A cancellation keeps the cancelled product's own type and carries no validity window, so neither the product-type nor the elapsed-`validTo` check excludes it — the service flags it as `cancelled` and `get_alerts` drops it from `active_only=true`. Detection is per record, never cached per code: a single code cycles CONTINUED → CANCEL → CONTINUED within minutes. `EXTENDED WARNING:` and `CONTINUED` headlines mean the product is still in force and are deliberately not cancellations. The explanation line varies (`Conditions no longer justify...`, `Should have only been valid until...`, `Incorrect maximum value...`), so the headline is the only reliable marker.

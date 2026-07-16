@@ -24,10 +24,25 @@ const AlertSchema = z
       .describe('Product classification derived from the code prefix.'),
     level: z
       .number()
-      .describe('Numeric severity level from the product code (0 when not applicable).'),
+      .describe(
+        'NOAA scale level 0–5, read from the scale stated in the message body. 0 means the product states no NOAA scale (e.g. a K4 warning, below the G-scale; or a radio-burst alert, outside the scales) — not a severity of zero. See noaaScale for the scale letter.',
+      ),
+    noaaScale: z
+      .string()
+      .nullable()
+      .describe(
+        'NOAA scale stated in the message body, e.g. "G1", "R2", "S1"; null when the product states none.',
+      ),
+    cancelled: z
+      .boolean()
+      .describe(
+        'True when this record cancels a previously issued product ("CANCEL WARNING:"/"CANCEL ALERT:" headline) rather than being in force. Always false when active_only=true, which excludes cancellations; set active_only=false to see them.',
+      ),
     phenomenon: z
       .string()
-      .describe('Short phenomenon name, e.g. "Geomagnetic", "Radio Blackout", "Solar Radiation".'),
+      .describe(
+        'Short phenomenon name derived from the body\'s NOAA scale letter, e.g. "Geomagnetic", "Radio Blackout", "Solar Radiation".',
+      ),
     issueDatetime: z.string().describe('ISO 8601 issue datetime.'),
     validFrom: z
       .string()
@@ -49,9 +64,9 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
   title: 'Get Space Weather Alerts',
   description:
     'Active SWPC alerts, watches, and warnings — parsed into structured records with product type, ' +
-    'severity level, issue time, validity window, and plain text. Covers geomagnetic storms, radio ' +
-    'blackouts, radiation storms, and aurora bulletins. With active_only=false, also returns ' +
-    'informational summaries and expired notices. max_age_hours controls how far back to look ' +
+    'NOAA scale and level, issue time, validity window, and plain text. Covers geomagnetic storms, ' +
+    'radio blackouts, and radiation storms. With active_only=false, also returns informational ' +
+    'summaries, expired notices, and cancellations. max_age_hours controls how far back to look ' +
     '(default 48 h); the SWPC feed keeps all historical records and has no built-in expiry.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
@@ -59,7 +74,7 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
       .boolean()
       .default(true)
       .describe(
-        'When true (default), return only Warnings, Watches, and Alerts; exclude Summaries and Other. Set false to return all products.',
+        'When true (default), return only in-force Warnings, Watches, and Alerts; exclude Summaries, Other, expired products, and cancellation notices. Set false to return all products, including cancellations (flagged by the cancelled field).',
       ),
     max_age_hours: z
       .number()
@@ -116,6 +131,9 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
           ) {
             return false;
           }
+          // A cancellation carries the cancelled product's own type and no validity
+          // window, so neither check above excludes it — it must be dropped explicitly.
+          if (a.cancelled) return false;
           if (a.validTo === null) return true;
           const validToMs = new Date(a.validTo).getTime();
           return Number.isNaN(validToMs) || validToMs >= nowMs;
@@ -136,6 +154,8 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
         messageCode: a.messageCode,
         productType: a.productType,
         level: a.level,
+        noaaScale: a.noaaScale,
+        cancelled: a.cancelled,
         phenomenon: a.phenomenon,
         issueDatetime: a.issueDatetime,
         validFrom: a.validFrom,
@@ -160,10 +180,16 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
     } else {
       for (const alert of result.alerts) {
         lines.push('');
+        // Mark cancellations in the heading: they carry the cancelled product's own
+        // type, so nothing else in the rendered record distinguishes them from one in force.
+        const status = alert.cancelled ? ' · CANCELLED' : '';
         lines.push(
-          `### [${alert.productType}] ${alert.phenomenon} — ${alert.messageCode} (${alert.productId})`,
+          `### [${alert.productType}${status}] ${alert.phenomenon} — ${alert.messageCode} (${alert.productId})`,
         );
-        lines.push(`**Issued:** ${alert.issueDatetime} | **Level:** ${alert.level}`);
+        // Spell out a scale-less product rather than leaving a bare "Level: 0", which
+        // reads as "calm" when it actually means the product states no NOAA scale.
+        const scale = alert.noaaScale ? ` (${alert.noaaScale})` : ' (no NOAA scale)';
+        lines.push(`**Issued:** ${alert.issueDatetime} | **Level:** ${alert.level}${scale}`);
         if (alert.validFrom) lines.push(`**Valid From:** ${alert.validFrom}`);
         if (alert.validTo) lines.push(`**Valid To:** ${alert.validTo}`);
         lines.push('');

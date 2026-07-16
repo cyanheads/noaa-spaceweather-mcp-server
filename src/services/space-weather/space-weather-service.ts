@@ -199,23 +199,89 @@ function parseProductType(id: string): SpaceWeatherAlert['productType'] {
   return 'Other';
 }
 
-/** Extract phenomenon name from product code. */
-function parsePhenomenon(id: string): string {
-  const upper = id.toUpperCase();
-  // After the 3-char type prefix, look at the next character(s)
-  const core = upper.slice(3);
-  if (core.startsWith('G') || core.startsWith('K')) return 'Geomagnetic';
-  if (core.startsWith('R') || core.startsWith('X')) return 'Radio Blackout';
-  if (core.startsWith('S')) return 'Solar Radiation';
-  if (core.startsWith('A')) return 'Aurora';
+/**
+ * Matches the NOAA scale stated in a product body, e.g. "NOAA Scale: G1 - Minor".
+ * Deliberately neither case-sensitive nor line-anchored: SWPC emits both
+ * "NOAA Scale:" and "Noaa Scale:", and sometimes glues correction prose straight
+ * onto the label with no line break ("...valid until 12/2100 UTC.NOAA Scale: G1 -
+ * Minor"), which a `^`-anchored pattern would silently miss.
+ */
+const NOAA_SCALE_RE = /noaa\s+scale:\s*([GRS]\d)/i;
+
+/**
+ * Matches the storm category in a Watch headline, e.g. "WATCH: Geomagnetic Storm
+ * Category G2 Predicted". The A-index watch products carry this instead of a
+ * "NOAA Scale:" line. The literal "Category" is required so this cannot match the
+ * per-day "Jul 03:  G2 (Moderate)" outlook lines further down the same body.
+ */
+const CATEGORY_RE = /category\s+([GRS]\d)/i;
+
+/**
+ * Matches a cancellation headline. SWPC cancels a product by issuing a fresh record
+ * under the same message code with a "CANCEL <type>:" headline, so this must be
+ * evaluated per record — a single code cycles between in-force and cancelled within
+ * minutes. "EXTENDED"/"CONTINUED" headlines mean the opposite (still in force) and
+ * deliberately do not match; the line anchor keeps the "Cancel Serial Number:" field
+ * carried by every cancellation from triggering it.
+ */
+const CANCEL_RE = /^CANCEL\s+(?:WARNING|WATCH|ALERT):/im;
+
+/**
+ * Extract the NOAA scale a product body states, e.g. "G1", "R2", "S1". Prefers the
+ * explicit "NOAA Scale:" label and falls back to a Watch headline's "Category G<n>".
+ * Returns null for products carrying neither — K4 warnings sit below the G-scale, and
+ * radio-burst/electron-flux alerts sit outside the NOAA scales entirely.
+ */
+function parseNoaaScale(message: string): string | null {
+  const m = message.match(NOAA_SCALE_RE) ?? message.match(CATEGORY_RE);
+  return m?.[1]?.toUpperCase() ?? null;
+}
+
+/**
+ * Fallback phenomenon for products whose body states no NOAA scale, keyed on the
+ * message code's core (the characters after the WAR/WAT/ALT/SUM prefix). Order
+ * matters: "SUD" (Geomagnetic Sudden Impulse) must be matched before the bare "S"
+ * solar-radiation branch it would otherwise fall into.
+ */
+function phenomenonFromCode(code: string): string {
+  const core = code.toUpperCase().slice(3);
+  if (core.startsWith('SUD')) return 'Geomagnetic';
+  // A-index storm watches (A20/A30/A50) are geomagnetic-storm products keyed on a
+  // predicted A-index, not aurora bulletins.
+  if (/^[AGK]\d/.test(core)) return 'Geomagnetic';
+  if (core.startsWith('X') || core.startsWith('R')) return 'Radio Blackout';
+  if (core.startsWith('PX') || core.startsWith('S')) return 'Solar Radiation';
   return 'Space Weather';
 }
 
-/** Parse numeric level from product code suffix. */
-function parseLevel(id: string): number {
-  const digits = id.match(/(\d+)\w*$/)?.[1];
-  if (!digits) return 0;
-  return parseInt(digits, 10);
+/**
+ * Resolve the phenomenon from the NOAA scale letter the body states — it names the
+ * product's domain directly — falling back to the message code when there is none.
+ */
+function parsePhenomenon(code: string, scale: string | null): string {
+  switch (scale?.[0]) {
+    case 'G':
+      return 'Geomagnetic';
+    case 'R':
+      return 'Radio Blackout';
+    case 'S':
+      return 'Solar Radiation';
+    default:
+      return phenomenonFromCode(code);
+  }
+}
+
+/**
+ * Resolve the NOAA scale level (0–5) from the scale the body states. K-index-suffixed
+ * codes carrying no scale line convert through {@link kpToGScale} (K4 sits below the
+ * G-scale, so it resolves to 0). Everything else falls back to 0, meaning "no NOAA
+ * scale" — a code's numeric suffix is not a severity: it encodes flux thresholds
+ * ("EF3"), radio-burst types ("TP2"), and wavelengths ("10R").
+ */
+function parseLevel(code: string, scale: string | null): number {
+  if (scale) return Number(scale.slice(1));
+  const kIndex = code.toUpperCase().match(/^(?:WAR|ALT)K(\d{2})$/)?.[1];
+  return kIndex ? kpToGScale(Number(kIndex)) : 0;
 }
 
 /**
@@ -647,7 +713,9 @@ export class SpaceWeatherService {
     const raw = await fetchFeed<RawAlert[]>('/products/alerts.json', ctx, this.userAgent);
     return raw.map((r) => {
       const id = r.product_id ?? '';
-      const message = r.message ?? '';
+      // Normalize line endings once: every parse below reads this text, and it is the
+      // body callers receive.
+      const message = (r.message ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
       // The product_id field in the feed is a 4-char abbreviated code (e.g. "K04W").
       // The full message code (e.g. "WARK04") lives in the message body as:
       //   "Space Weather Message Code: WARK04"
@@ -655,17 +723,22 @@ export class SpaceWeatherService {
       // the WAR/WAT/ALT/SUM prefix the parser needs.
       const msgCodeMatch = message.match(/Space\s+Weather\s+Message\s+Code:\s*(\S+)/i);
       const msgCode = msgCodeMatch?.[1] ?? id;
+      // The body's NOAA scale drives both level and phenomenon — the message code's
+      // suffix and prefix shape misreport both for most live products.
+      const noaaScale = parseNoaaScale(message);
       return {
         productId: id,
         messageCode: msgCode,
         productType: parseProductType(msgCode),
-        level: parseLevel(msgCode),
+        level: parseLevel(msgCode, noaaScale),
+        noaaScale,
+        cancelled: CANCEL_RE.test(message),
         // Normalize SWPC's space-separated datetime ("2026-06-06 22:11:17") to ISO 8601 so
         // downstream Date comparisons work correctly (the SpaceWeatherAlert.issueDatetime
         // contract says ISO 8601; raw feed values break string comparisons with ISO cutoffs).
         issueDatetime: normalizeSwpcTime(r.issue_datetime ?? ''),
-        message: message.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim(),
-        phenomenon: parsePhenomenon(msgCode),
+        message,
+        phenomenon: parsePhenomenon(msgCode, noaaScale),
         // Validity window parsed from the message body, normalized to ISO 8601.
         // SWPC labels it differently per product: Warnings/Watches use "Valid
         // From/To", extended Warnings restate the expiry as "Now Valid Until",

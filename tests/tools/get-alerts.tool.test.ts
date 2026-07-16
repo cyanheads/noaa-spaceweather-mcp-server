@@ -21,7 +21,10 @@ function makeAlert(overrides: Partial<SpaceWeatherAlert> = {}): SpaceWeatherAler
     productId: 'K04W',
     messageCode: 'WARK04',
     productType: 'Warning',
-    level: 4,
+    // WARK04 states no NOAA scale — K4 sits below the G-scale — so level is 0 (#18).
+    level: 0,
+    noaaScale: null,
+    cancelled: false,
     issueDatetime: '2026-06-04T12:00:00Z',
     message: 'Geomagnetic K-index of 4 expected.',
     phenomenon: 'Geomagnetic',
@@ -88,6 +91,8 @@ describe('getAlerts', () => {
         productId: 'NULW',
         messageCode: 'WATA50',
         productType: 'Watch',
+        level: 3,
+        noaaScale: 'G3',
         issueDatetime: recentIssue,
         validFrom: null,
         validTo: null,
@@ -131,6 +136,120 @@ describe('getAlerts', () => {
 
     expect(result.alerts.map((a) => a.productId)).toContain('RAWW');
     expect(result.totalCount).toBe(1);
+  });
+
+  it('active_only=true excludes cancellation notices (regression #19)', async () => {
+    const recentIssue = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const alerts: SpaceWeatherAlert[] = [
+      // A cancellation keeps the cancelled product's own type and carries no validity
+      // window, so neither the productType nor the elapsed-validTo check excludes it.
+      makeAlert({
+        productId: 'K05W',
+        messageCode: 'WARK05',
+        productType: 'Warning',
+        level: 1,
+        noaaScale: 'G1',
+        cancelled: true,
+        issueDatetime: recentIssue,
+        validFrom: null,
+        validTo: null,
+      }),
+      // Cancelled Alerts must drop too — a predicate keyed on Warnings alone misses these.
+      makeAlert({
+        productId: 'EF3A',
+        messageCode: 'ALTEF3',
+        productType: 'Alert',
+        phenomenon: 'Space Weather',
+        cancelled: true,
+        issueDatetime: recentIssue,
+        validFrom: null,
+        validTo: null,
+      }),
+      // In-force Warning with the same shape — kept.
+      makeAlert({
+        productId: 'K06W',
+        messageCode: 'WARK06',
+        productType: 'Warning',
+        level: 2,
+        noaaScale: 'G2',
+        issueDatetime: recentIssue,
+        validFrom: null,
+        validTo: null,
+      }),
+    ];
+    const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAlerts.errors });
+    const input = getAlerts.input.parse({ active_only: true, max_age_hours: 720 });
+    const result = await getAlerts.handler(input, ctx);
+
+    expect(result.alerts.map((a) => a.productId)).toEqual(['K06W']);
+    expect(result.alerts.every((a) => !a.cancelled)).toBe(true);
+    expect(result.totalCount).toBe(1);
+  });
+
+  it('active_only=false returns cancellations, flagged (regression #19)', async () => {
+    const recentIssue = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const alerts: SpaceWeatherAlert[] = [
+      makeAlert({
+        productId: 'K05W',
+        messageCode: 'WARK05',
+        cancelled: true,
+        issueDatetime: recentIssue,
+        validTo: null,
+      }),
+      makeAlert({ productId: 'K06W', messageCode: 'WARK06', issueDatetime: recentIssue }),
+    ];
+    const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAlerts.errors });
+    const input = getAlerts.input.parse({ active_only: false });
+    const result = await getAlerts.handler(input, ctx);
+
+    expect(result.totalCount).toBe(2);
+    expect(result.alerts.find((a) => a.productId === 'K05W')!.cancelled).toBe(true);
+    expect(result.alerts.find((a) => a.productId === 'K06W')!.cancelled).toBe(false);
+  });
+
+  it('active_only=true drops only the cancelled record of a code that flips (regression #19)', async () => {
+    // The live feed cycles a single code CONTINUED → CANCEL → CONTINUED within minutes,
+    // so filtering must be per record: cancelling by message code would wrongly drop the
+    // in-force records either side of the cancellation.
+    const t = (minsAgo: number) => new Date(Date.now() - minsAgo * 60 * 1000).toISOString();
+    const alerts: SpaceWeatherAlert[] = [
+      makeAlert({
+        productId: 'EF3A-a',
+        messageCode: 'ALTEF3',
+        productType: 'Alert',
+        issueDatetime: t(30),
+        validTo: null,
+      }),
+      makeAlert({
+        productId: 'EF3A-b',
+        messageCode: 'ALTEF3',
+        productType: 'Alert',
+        cancelled: true,
+        issueDatetime: t(26),
+        validTo: null,
+      }),
+      makeAlert({
+        productId: 'EF3A-c',
+        messageCode: 'ALTEF3',
+        productType: 'Alert',
+        issueDatetime: t(25),
+        validTo: null,
+      }),
+    ];
+    const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAlerts.errors });
+    const input = getAlerts.input.parse({ active_only: true });
+    const result = await getAlerts.handler(input, ctx);
+
+    expect(result.alerts.map((a) => a.productId)).toEqual(['EF3A-a', 'EF3A-c']);
   });
 
   it('excludes alerts older than max_age_hours', async () => {
@@ -198,7 +317,14 @@ describe('getAlerts', () => {
         phenomenon: 'Space Weather',
         issueDatetime: recent,
       }),
-      makeAlert({ productId: 'ALTK07', productType: 'Alert', level: 7, issueDatetime: recent }),
+      makeAlert({
+        productId: 'K07A',
+        messageCode: 'ALTK07',
+        productType: 'Alert',
+        level: 3,
+        noaaScale: 'G3',
+        issueDatetime: recent,
+      }),
     ];
     const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };
     mockGetSpaceWeatherService.mockReturnValue(svc as never);
@@ -240,15 +366,17 @@ describe('getAlerts', () => {
     const output = {
       alerts: [
         {
-          productId: 'K04W',
-          messageCode: 'WARK04',
+          productId: 'K05W',
+          messageCode: 'WARK05',
           productType: 'Warning' as const,
-          level: 4,
+          level: 1,
+          noaaScale: 'G1',
+          cancelled: false,
           phenomenon: 'Geomagnetic',
           issueDatetime: '2026-06-04T12:00:00Z',
           validFrom: '2026-06-04T12:00:00Z',
           validTo: '2026-06-04T23:59:00Z',
-          message: 'K-index of 4 expected.',
+          message: 'K-index of 5 expected.',
         },
       ],
       totalCount: 1,
@@ -258,9 +386,42 @@ describe('getAlerts', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('Warning');
     expect(text).toContain('Geomagnetic');
-    expect(text).toContain('WARK04'); // full message code
-    expect(text).toContain('K04W'); // short feed ID
-    expect(text).toContain('K-index of 4 expected.');
+    expect(text).toContain('WARK05'); // full message code
+    expect(text).toContain('K05W'); // short feed ID
+    expect(text).toContain('K-index of 5 expected.');
     expect(text).toContain('**Total:** 1');
+    // The scale letter rides alongside the numeric level; clients that render only
+    // content[] must not lose it (#18).
+    expect(text).toContain('**Level:** 1 (G1)');
+    expect(text).not.toContain('CANCELLED');
+  });
+
+  it('format marks cancellations and spells out a scale-less product (#18, #19)', () => {
+    const output = {
+      alerts: [
+        {
+          productId: 'EF3A',
+          messageCode: 'ALTEF3',
+          productType: 'Alert' as const,
+          level: 0,
+          noaaScale: null,
+          cancelled: true,
+          phenomenon: 'Space Weather',
+          issueDatetime: '2026-07-07T05:06:59Z',
+          validFrom: null,
+          validTo: null,
+          message: 'CANCEL ALERT: Electron 2MeV Integral Flux exceeded 1000pfu',
+        },
+      ],
+      totalCount: 1,
+      fetchedAt: '2026-07-07T06:00:00.000Z',
+    };
+    const text = (getAlerts.format!(output)[0] as { text: string }).text;
+
+    // A cancellation keeps its original product type, so the heading is the only place
+    // a content[]-only client can learn it is not in force.
+    expect(text).toContain('[Alert · CANCELLED]');
+    // A bare "Level: 0" reads as calm; it must say the product states no scale.
+    expect(text).toContain('**Level:** 0 (no NOAA scale)');
   });
 });

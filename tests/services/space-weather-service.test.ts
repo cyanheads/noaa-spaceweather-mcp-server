@@ -85,11 +85,13 @@ describe('SpaceWeatherService.getAlerts', () => {
     expect(alerts[2]!.messageCode).toBe('ALTK04');
     expect(alerts[3]!.messageCode).toBe('SUMSUD');
 
-    // Verify phenomenon parsed from message code suffix
-    expect(alerts[0]!.phenomenon).toBe('Geomagnetic'); // WARK04 → core='K04' → Geomagnetic
+    // Phenomenon comes from the body's scale letter, falling back to the code (#18).
+    expect(alerts[0]!.phenomenon).toBe('Geomagnetic'); // WARK04 → no scale line → code core 'K04'
+    expect(alerts[1]!.phenomenon).toBe('Geomagnetic'); // WATA50 → headline "Category G3"
 
-    // Verify level parsed from numeric suffix of the full code
-    expect(alerts[0]!.level).toBe(4); // WARK04 → 04
+    // Level comes from the body's scale, never the code's numeric suffix (#18).
+    expect(alerts[0]!.level).toBe(0); // WARK04 → no scale; K4 sits below the G-scale
+    expect(alerts[1]!.level).toBe(3); // WATA50 → "Category G3", not the A-index 50
 
     // Verify validFrom/validTo extracted and normalized to ISO 8601 UTC
     expect(alerts[0]!.validFrom).toBe('2026-06-05T04:34:00Z');
@@ -171,6 +173,297 @@ describe('SpaceWeatherService.getAlerts', () => {
     expect(alerts[0]!.productType).toBe('Other');
     // messageCode falls back to the short feed ID when no message-code line exists (#14)
     expect(alerts[0]!.messageCode).toBe('OTHER');
+  });
+
+  /**
+   * Bodies are excerpted verbatim from the live /products/alerts.json feed, trimmed of
+   * the boilerplate "Potential Impacts" tail no parser reads. Together they cover every
+   * message code the feed currently carries.
+   */
+  const DERIVATION_CASES: {
+    code: string;
+    productId: string;
+    body: string;
+    level: number;
+    noaaScale: string | null;
+    phenomenon: string;
+  }[] = [
+    {
+      // Suffix "EF3" is an electron-flux threshold ID, not a severity.
+      code: 'ALTEF3',
+      productId: 'EF3A',
+      body: 'Space Weather Message Code: ALTEF3\r\nSerial Number: 3716\r\nIssue Time: 2026 Jul 13 1027 UTC\r\n\r\nCONTINUED ALERT: Electron 2MeV Integral Flux exceeded 1000pfu\nContinuation of Serial Number: 3715\nBegin Time: 2026 Jul 10 1126 UTC\n',
+      level: 0,
+      noaaScale: null,
+      phenomenon: 'Space Weather',
+    },
+    {
+      // K4 is below the G-scale, so SWPC states no scale. The retained "NOAA Space
+      // Weather Scale descriptions" boilerplate must not be mistaken for a scale line.
+      code: 'ALTK04',
+      productId: 'K04A',
+      body: 'Space Weather Message Code: ALTK04\r\nSerial Number: 2675\r\nIssue Time: 2026 Jul 15 0558 UTC\r\n\r\nALERT: Geomagnetic K-index of 4 \nThreshold Reached: 2026 Jul 15 0554 UTC\nActive Warning: YES\r\n\r\nNOAA Space Weather Scale descriptions can be found at\r\nwww.swpc.noaa.gov/noaa-scales-explanation\r\n',
+      level: 0,
+      noaaScale: null,
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      // "Noaa Scale:" — the lowercase label variant SWPC emits alongside "NOAA Scale:".
+      code: 'ALTK05',
+      productId: 'K05A',
+      body: 'Space Weather Message Code: ALTK05\r\nSerial Number: 2039\r\nIssue Time: 2026 Jul 12 1503 UTC\r\n\r\nALERT: Geomagnetic K-index of 5 \nThreshold Reached: 2026 Jul 12 1459 UTC\nActive Warning: YES\nNoaa Scale: G1 - Minor\nComment: \r\n',
+      level: 1,
+      noaaScale: 'G1',
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      code: 'ALTK06',
+      productId: 'K06A',
+      body: 'Space Weather Message Code: ALTK06\r\nSerial Number: 723\r\nIssue Time: 2026 Jul 04 1700 UTC\r\n\r\nALERT: Geomagnetic K-index of 6 \nNoaa Scale: G2 - Moderate\nComment: \r\n',
+      level: 2,
+      noaaScale: 'G2',
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      code: 'ALTK07',
+      productId: 'K07A',
+      body: 'Space Weather Message Code: ALTK07\r\nSerial Number: 218\r\nIssue Time: 2026 Jul 04 0509 UTC\r\n\r\nALERT: Geomagnetic K-index of 7 \nNoaa Scale: G3 - Strong\nComment: \r\n\nNOAA Scale: G3 - Strong',
+      level: 3,
+      noaaScale: 'G3',
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      // Suffix "TP2" is radio-burst Type II, not a severity.
+      code: 'ALTTP2',
+      productId: 'TIIA',
+      body: 'Space Weather Message Code: ALTTP2\r\nSerial Number: 1515\r\nIssue Time: 2026 Jul 12 0211 UTC\r\n\r\nALERT: Type II Radio Emission \nBegin Time: 2026 Jul 12 0135 UTC\nEstimate Velocity: 678 km/s\n',
+      level: 0,
+      noaaScale: null,
+      phenomenon: 'Space Weather',
+    },
+    {
+      // Suffix "TP4" is radio-burst Type IV, not a severity.
+      code: 'ALTTP4',
+      productId: 'TIVA',
+      body: 'Space Weather Message Code: ALTTP4\r\nSerial Number: 714\r\nIssue Time: 2026 Jul 12 0212 UTC\r\n\r\nALERT: Type IV Radio Emission \nBegin Time: 2026 Jul 12 0053 UTC\n',
+      level: 0,
+      noaaScale: null,
+      phenomenon: 'Space Weather',
+    },
+    {
+      // The code carries no digits at all; the scale line is the only severity signal.
+      code: 'ALTXMF',
+      productId: 'XM5A',
+      body: 'Space Weather Message Code: ALTXMF\r\nSerial Number: 539\r\nIssue Time: 2026 Jul 05 1800 UTC\r\n\r\nALERT: X-Ray Flux exceeded M5 \nThreshold Reached: 2026 Jul 05 1758 UTC\nNoaa Scale: R2 - Moderate\nComment: \r\n',
+      level: 2,
+      noaaScale: 'R2',
+      phenomenon: 'Radio Blackout',
+    },
+    {
+      // Suffix "10R" is the 10cm wavelength, not a severity.
+      code: 'SUM10R',
+      productId: 'BHIS',
+      body: 'Space Weather Message Code: SUM10R\r\nSerial Number: 922\r\nIssue Time: 2026 Jul 04 2115 UTC\r\n\r\nSUMMARY: 10cm Radio Burst \nBegin Time: 2026 Jul 04 2040 UTC\nPeak Flux: 890 sfu\n',
+      level: 0,
+      noaaScale: null,
+      phenomenon: 'Space Weather',
+    },
+    {
+      code: 'SUMX01',
+      productId: 'XX0S',
+      body: 'Space Weather Message Code: SUMX01\r\nSerial Number: 220\r\nIssue Time: 2026 Jul 04 2116 UTC\r\n\r\nSUMMARY: X-ray Event exceeded X1 \nXray Class: X1.3\nNoaa Scale: R3 - Strong\nComment: \r\n',
+      level: 3,
+      noaaScale: 'R3',
+      phenomenon: 'Radio Blackout',
+    },
+    {
+      code: 'SUMXM5',
+      productId: 'XM5S',
+      body: 'Space Weather Message Code: SUMXM5\r\nSerial Number: 324\r\nIssue Time: 2026 Jul 05 1809 UTC\r\n\r\nSUMMARY: X-ray Event exceeded M5 \nXray Class: M5.5\nNoaa Scale: R2 - Moderate\nComment: \r\n',
+      level: 2,
+      noaaScale: 'R2',
+      phenomenon: 'Radio Blackout',
+    },
+    {
+      // EXTENDED means still in force, and K4 states no scale.
+      code: 'WARK04',
+      productId: 'K04W',
+      body: 'Space Weather Message Code: WARK04\r\nSerial Number: 5387\r\nIssue Time: 2026 Jul 15 0853 UTC\r\n\r\nEXTENDED WARNING: Geomagnetic K-index of 4 expected\nExtension to Serial Number: 5386\nValid From: 2026 Jul 15 0143 UTC\nNow Valid Until: 2026 Jul 15 1500 UTC\n',
+      level: 0,
+      noaaScale: null,
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      code: 'WARK05',
+      productId: 'K05W',
+      body: 'Space Weather Message Code: WARK05\r\nSerial Number: 2249\r\nIssue Time: 2026 Jul 12 1411 UTC\r\n\r\nWARNING: Geomagnetic K-index of 5 expected \nValid From: 2026 Jul 12 1410 UTC\nValid To: 2026 Jul 13 2100 UTC\nNoaa Scale: G1 - Minor\nComment: \r\n',
+      level: 1,
+      noaaScale: 'G1',
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      code: 'WARK06',
+      productId: 'K06W',
+      body: 'Space Weather Message Code: WARK06\r\nSerial Number: 665\r\nIssue Time: 2026 Jul 04 1357 UTC\r\n\r\nWARNING: Geomagnetic K-index of 6 expected \nNoaa Scale: G2 - Moderate\nComment: \r\n',
+      level: 2,
+      noaaScale: 'G2',
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      code: 'WARK07',
+      productId: 'K07W',
+      body: 'Space Weather Message Code: WARK07\r\nSerial Number: 151\r\nIssue Time: 2026 Jul 04 0501 UTC\r\n\r\nWARNING: Geomagnetic K-index of 7 or greater expected \nNoaa Scale: G3 - Greater\nComment: \r\n',
+      level: 3,
+      noaaScale: 'G3',
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      // The code's "PX1" suffix reads as level 1 by coincidence; the S1 scale is the
+      // only reason this is Solar Radiation rather than the code-shaped "Space Weather".
+      code: 'WARPX1',
+      productId: 'P11W',
+      body: 'Space Weather Message Code: WARPX1\r\nSerial Number: 626\r\nIssue Time: 2026 Jun 30 1600 UTC\r\n\r\nWARNING: Proton 10MeV Integral Flux above 10pfu expected \nValid From: 2026 Jun 30 1600 UTC\nNoaa Scale: S1 - Minor\nComment: \r\n',
+      level: 1,
+      noaaScale: 'S1',
+      phenomenon: 'Solar Radiation',
+    },
+    {
+      // "SUD" is Sudden Impulse — a geomagnetic product. Its leading S must not read
+      // as the solar-radiation scale letter.
+      code: 'WARSUD',
+      productId: 'SGIW',
+      body: 'Space Weather Message Code: WARSUD\r\nSerial Number: 256\r\nIssue Time: 2026 Jul 03 1138 UTC\r\n\r\nWARNING: Geomagnetic Sudden Impulse expected \nValid From: 2026 Jul 03 1157 UTC\nIp Shock: 2026-07-03 11:20\n',
+      level: 0,
+      noaaScale: null,
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      // A-index watches state "Category G<n>" and carry no "NOAA Scale:" line at all.
+      code: 'WATA20',
+      productId: 'A20F',
+      body: 'Space Weather Message Code: WATA20\r\nSerial Number: 1115\r\nIssue Time: 2026 Jul 10 1946 UTC\r\n\r\nWATCH: Geomagnetic Storm Category G1 Predicted \nHighest Storm Level Predicted by Day:\nJul 11:  None (Below G1)   Jul 12:  G1 (Minor)   Jul 13:  None (Below G1)   \n',
+      level: 1,
+      noaaScale: 'G1',
+      phenomenon: 'Geomagnetic',
+    },
+    {
+      // The per-day outlook line trails a lower G1; the headline Category must win.
+      code: 'WATA30',
+      productId: 'A30F',
+      body: 'Space Weather Message Code: WATA30\r\nSerial Number: 278\r\nIssue Time: 2026 Jul 03 1123 UTC\r\n\r\nWATCH: Geomagnetic Storm Category G2 Predicted \nHighest Storm Level Predicted by Day:\nJul 03:  G2 (Moderate)   Jul 04:  G2 (Moderate)   Jul 05:  G1 (Minor)   \n',
+      level: 2,
+      noaaScale: 'G2',
+      phenomenon: 'Geomagnetic',
+    },
+  ];
+
+  it('derives level, noaaScale, and phenomenon from the message body for every live message code (#18)', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse(
+        DERIVATION_CASES.map((c) => ({
+          product_id: c.productId,
+          issue_datetime: '2026-07-15 00:00:00.000',
+          message: c.body,
+        })),
+      ),
+    );
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    expect(
+      alerts.map((a) => ({
+        code: a.messageCode,
+        level: a.level,
+        noaaScale: a.noaaScale,
+        phenomenon: a.phenomenon,
+      })),
+    ).toEqual(
+      DERIVATION_CASES.map((c) => ({
+        code: c.code,
+        level: c.level,
+        noaaScale: c.noaaScale,
+        phenomenon: c.phenomenon,
+      })),
+    );
+  });
+
+  it('reads a scale label glued onto correction prose with no line break (#18)', async () => {
+    // Verbatim live WARPX1 cancellation: SWPC ran the explanation straight into the
+    // label. A line-anchored scale regex misses it, and WARPX1 has no K-index suffix
+    // to fall back on, so the level would silently drop to 0 and the phenomenon to
+    // the code-shaped "Space Weather".
+    const rawAlerts = [
+      {
+        product_id: 'P11W',
+        issue_datetime: '2026-06-30 16:36:36.953',
+        message:
+          'Space Weather Message Code: WARPX1\r\nSerial Number: 627\r\nIssue Time: 2026 Jun 30 1636 UTC\r\n\r\nCANCEL WARNING: Proton 10MeV Integral Flux above 10pfu expected \nCancel Serial Number: 626\nOriginal Issue Time: 2026 Jun 30 1600 UTC\nConditions no longer justify warning.\r\n\nConditions no longer justify warning.NOAA Scale: S1 - Minor',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(rawAlerts));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    expect(alerts[0]!.noaaScale).toBe('S1');
+    expect(alerts[0]!.level).toBe(1);
+    expect(alerts[0]!.phenomenon).toBe('Solar Radiation');
+  });
+
+  it('flags cancellations per record and never EXTENDED/CONTINUED continuations (#19)', async () => {
+    // Verbatim live ALTEF3 sequence: the same message code went CONTINUED → CANCEL →
+    // CONTINUED inside four minutes, so cancellation cannot be cached per code.
+    const rawAlerts = [
+      {
+        product_id: 'EF3A',
+        issue_datetime: '2026-07-07 05:03:30.530',
+        message:
+          'Space Weather Message Code: ALTEF3\r\nSerial Number: 3709\r\nIssue Time: 2026 Jul 07 0503 UTC\r\n\r\nCONTINUED ALERT: Electron 2MeV Integral Flux exceeded 1000pfu\nContinuation of Serial Number: 3708\n',
+      },
+      {
+        product_id: 'EF3A',
+        issue_datetime: '2026-07-07 05:06:59.600',
+        message:
+          'Space Weather Message Code: ALTEF3\r\nSerial Number: 3710\r\nIssue Time: 2026 Jul 07 0506 UTC\r\n\r\nCANCEL ALERT: Electron 2MeV Integral Flux exceeded 1000pfu \nCancel Serial Number: 3709\nOriginal Issue Time: 2026 Jul 07 0503 UTC\nIncorrect maximum value for yesterday.\n',
+      },
+      {
+        product_id: 'EF3A',
+        issue_datetime: '2026-07-07 05:07:12.617',
+        message:
+          'Space Weather Message Code: ALTEF3\r\nSerial Number: 3711\r\nIssue Time: 2026 Jul 07 0507 UTC\r\n\r\nCONTINUED ALERT: Electron 2MeV Integral Flux exceeded 1000pfu\nContinuation of Serial Number: 3710\n',
+      },
+      {
+        // CANCEL WARNING — the other live cancellation headline. A predicate keyed on
+        // "WARNING" alone misses the ALERT cases above; one keyed on "ALERT" misses this.
+        product_id: 'K05W',
+        issue_datetime: '2026-07-12 21:01:57.203',
+        message:
+          'Space Weather Message Code: WARK05\r\nSerial Number: 2250\r\nIssue Time: 2026 Jul 12 2101 UTC\r\n\r\nCANCEL WARNING: Geomagnetic K-index of 5 expected \nCancel Serial Number: 2249\nOriginal Issue Time: 2026 Jul 12 1411 UTC\nShould have only been valid until 12/2100 UTC.NOAA Scale: G1 - Minor',
+      },
+      {
+        // EXTENDED means the warning is still in force — the opposite of cancelled.
+        product_id: 'K04W',
+        issue_datetime: '2026-07-15 08:53:00.000',
+        message:
+          'Space Weather Message Code: WARK04\r\nSerial Number: 5387\r\nIssue Time: 2026 Jul 15 0853 UTC\r\n\r\nEXTENDED WARNING: Geomagnetic K-index of 4 expected\nExtension to Serial Number: 5386\nNow Valid Until: 2026 Jul 15 1500 UTC\n',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(rawAlerts));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    expect(alerts.map((a) => a.cancelled)).toEqual([false, true, false, true, false]);
+    // Every record shares a code with a differently-flagged neighbour.
+    expect(alerts.filter((a) => a.messageCode === 'ALTEF3').map((a) => a.cancelled)).toEqual([
+      false,
+      true,
+      false,
+    ]);
   });
 
   it('normalizes a space-separated issue datetime without fractional seconds to explicit UTC (#13)', async () => {
