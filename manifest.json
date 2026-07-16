@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "noaa-spaceweather-mcp-server",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "NOAA SWPC space weather: storm scales, Kp index, aurora forecasts, solar wind, activity, alerts.",
   "author": { "name": "cyanheads" },
   "repository": {

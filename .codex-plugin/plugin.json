@@ -1,6 +1,6 @@
 {
   "name": "noaa-spaceweather-mcp-server",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Query NOAA SWPC space weather: geomagnetic storm scales, Kp index, aurora forecasts, solar wind, solar activity, and alerts via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
@@ -28,7 +28,7 @@
   "interface": {
     "displayName": "noaa-spaceweather-mcp-server",
     "shortDescription": "NOAA SWPC space weather: storm scales, Kp index, aurora forecasts, solar wind, activity, alerts.",
-    "longDescription": "Read-only access to the NOAA Space Weather Prediction Center (SWPC). Six tools cover the operational space-weather picture: get_conditions for a current R/S/G storm-scale snapshot with the latest Kp and a plain-language summary, get_kp_index for observed and forecast planetary K-index, get_aurora_forecast for coordinate-based aurora visibility, get_solar_wind for real-time ACE/DSCOVR plasma and magnetic-field data (including the southward Bz that drives geomagnetic storms), get_solar_activity for X-ray flux and recent flare events, and get_alerts for active SWPC watches, warnings, and advisories. All SWPC feeds are public and keyless; the server runs over STDIO or Streamable HTTP.",
+    "longDescription": "Read-only access to the NOAA Space Weather Prediction Center (SWPC). Six tools cover the operational space-weather picture: get_conditions for a current R/S/G storm-scale snapshot with the latest Kp and a plain-language summary, get_kp_index for observed and forecast planetary K-index, get_aurora_forecast for coordinate-based aurora visibility, get_solar_wind for real-time plasma and magnetic-field data from the active L1 spacecraft (including the southward Bz that drives geomagnetic storms), get_solar_activity for X-ray flux and recent flare events, and get_alerts for active SWPC watches, warnings, and advisories. All SWPC feeds are public and keyless; the server runs over STDIO or Streamable HTTP.",
     "developerName": "cyanheads",
     "category": "data",
     "capabilities": ["Read"],

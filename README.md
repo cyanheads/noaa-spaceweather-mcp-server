@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.9-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/noaa-spaceweather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/noaa-spaceweather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/noaa-spaceweather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.10-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/noaa-spaceweather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/noaa-spaceweather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/noaa-spaceweather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -36,7 +36,7 @@ Six tools covering the full NOAA SWPC space weather surface — from a quick sta
 | `noaa_spaceweather_get_conditions` | Current space-weather snapshot: NOAA R/S/G storm scales, latest Kp, and a plain-language status summary |
 | `noaa_spaceweather_get_kp_index` | Planetary K-index (0–9) — recent observed 3-hour values with G-scale equivalents and aurora-latitude guidance, plus 3-day forecast |
 | `noaa_spaceweather_get_aurora_forecast` | OVATION model aurora forecast: global probability grid, optional local lookup by coordinates with go/no-go verdict |
-| `noaa_spaceweather_get_solar_wind` | Real-time solar wind from DSCOVR: speed, proton density, temperature, and the critical Bz component — explains why current geomagnetic conditions exist |
+| `noaa_spaceweather_get_solar_wind` | Real-time solar wind from the active L1 spacecraft: speed, proton density, temperature, and the critical Bz component — explains why current geomagnetic conditions exist |
 | `noaa_spaceweather_get_solar_activity` | Solar flare picture: GOES X-ray flux, 3-day flare-class probabilities, active solar regions with per-region probabilities, and solar radiation storm level |
 | `noaa_spaceweather_get_alerts` | Active SWPC alerts, watches, and warnings — structured records with product type, severity, issue time, validity window, and full message text |
 
@@ -73,9 +73,11 @@ OVATION model aurora probability at 1° resolution, updated every ~5 minutes.
 
 ### `noaa_spaceweather_get_solar_wind`
 
-DSCOVR satellite real-time solar wind plasma and magnetic field.
+Real-time solar wind plasma and magnetic field from SWPC's RTSW feeds.
 
-- `window_hours` parameter (1–168, default 3) — time series sliced client-side from 7-day feed
+- Reads the spacecraft SWPC flags as active; every record names its `source`, so no satellite is assumed
+- `window_hours` parameter (1–168, default 3) — sliced client-side from a feed that carries roughly the last 24 hours at 1-minute cadence
+- Reports `latestFeedPlasmaTime`, `latestFeedMagTime`, and `feedStalenessHours` so an empty window is distinguishable from a stale feed
 - Plasma: speed (km/s), proton density (n/cm³), temperature
 - Bz component (southward Bz = storm driver) surfaced prominently in output and format
 - Bt (total field magnitude) and GSM vector components
@@ -119,7 +121,7 @@ Space weather domain:
 
 - All SWPC feeds are public and keyless — no API keys required
 - Single `SpaceWeatherService` wraps all six NOAA SWPC JSON feeds with `fetchWithTimeout` + `withRetry`
-- Heterogeneous feed normalization: array-of-arrays (solar wind), keyed objects (storm scales), coordinate triples (OVATION)
+- Heterogeneous feed normalization: interleaved multi-spacecraft records (solar wind), keyed objects (storm scales), coordinate triples (OVATION)
 - NOAA scale interpretation: raw Kp 6 → "G2 moderate storm — aurora possible to ~55° geomagnetic latitude"
 - Feed freshness surfaced per-response: solar wind updates ~1 min, aurora ~5 min, Kp 3-hour intervals
 

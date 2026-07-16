@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-07-15
+
+get_solar_wind ports from the removed DSCOVR feeds to SWPC's RTSW feeds, adding a per-record spacecraft source and feed-freshness reporting for empty windows; mcp-ts-core ^0.10.10 → ^0.10.14 with new supply-chain install guards
+
 ## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-06-30 · 🛡️ Security
 
 get_solar_activity gains date-neutral flare-probability aliases alongside the *1Day fields; get_kp_index and get_solar_activity window filters switch to epoch comparison; SWPC User-Agent tracks the package version; mcp-ts-core ^0.10.10 clears the moderate js-yaml advisory (GHSA-h67p-54hq-rp68)

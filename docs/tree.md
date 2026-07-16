@@ -1,6 +1,6 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-06-20 12:10:47
+Generated on: 2026-07-16 05:56:28
 
 ```text
 noaa-spaceweather-mcp-server/
@@ -11,10 +11,12 @@ noaa-spaceweather-mcp-server/
 │   ├── mcp.json
 │   └── plugin.json
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       ├── bug_report.yml
-│       ├── config.yml
-│       └── feature_request.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   ├── FUNDING.yml
+│   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -159,6 +161,7 @@ noaa-spaceweather-mcp-server/
 │       └── get-solar-wind.tool.test.ts
 ├── .dockerignore
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
 ├── AGENTS.md
@@ -166,6 +169,7 @@ noaa-spaceweather-mcp-server/
 ├── bun.lock
 ├── bunfig.toml
 ├── CHANGELOG.md
+├── CITATION.cff
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
