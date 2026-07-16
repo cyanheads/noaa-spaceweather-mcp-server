@@ -191,19 +191,53 @@ describe('SpaceWeatherService.getAlerts', () => {
   });
 });
 
-describe('SpaceWeatherService.getSolarWindPlasma (array-of-arrays)', () => {
+describe('SpaceWeatherService.getSolarWindPlasma (RTSW)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it('normalizes array-of-arrays feed: header row becomes field names, data rows become objects; space-separated time tags become ISO 8601 UTC', async () => {
-    // SWPC plasma feed uses "YYYY-MM-DD HH:MM:SS.mmm" (space separator, no Z).
-    // Service must normalize these to "YYYY-MM-DDTHH:MM:SS.mmmZ" to prevent
-    // Node.js from interpreting them as local time during Date parsing.
+  it('maps RTSW object fields, keeps only the active spacecraft, and orders oldest-first', async () => {
+    // Verbatim records from https://services.swpc.noaa.gov/json/rtsw/rtsw_wind_1m.json.
+    // The feed interleaves spacecraft and serves newest-first. The ACE record is the
+    // newest row in the feed but is NOT the active source — taking it would report
+    // another spacecraft's measurements as the current solar wind.
     const raw = [
-      ['time_tag', 'density', 'speed', 'temperature'],
-      ['2026-06-05 06:00:00.000', '5.2', '420.1', '80000'],
-      ['2026-06-05 06:01:00.000', '5.5', '421.0', '81000'],
+      {
+        time_tag: '2026-07-16T05:01:00',
+        active: false,
+        source: 'ACE',
+        proton_speed: 448.32,
+        proton_temperature: 108891,
+        proton_density: 1.09,
+        proton_sample_size: 1,
+        alpha_speed: null,
+        max_data_flag: 0,
+        overall_quality: 0,
+      },
+      {
+        time_tag: '2026-07-16T05:00:00',
+        active: true,
+        source: 'SOLAR1',
+        proton_speed: 475.4,
+        proton_temperature: 304713,
+        proton_density: 4.95,
+        proton_sample_size: 1,
+        alpha_speed: null,
+        max_data_flag: 0,
+        overall_quality: 0,
+      },
+      {
+        time_tag: '2026-07-16T04:59:00',
+        active: true,
+        source: 'SOLAR1',
+        proton_speed: 476.2,
+        proton_temperature: 289624,
+        proton_density: 5.0,
+        proton_sample_size: 1,
+        alpha_speed: null,
+        max_data_flag: 0,
+        overall_quality: 0,
+      },
     ];
     mockFetch.mockResolvedValue(makeResponse(raw));
 
@@ -211,19 +245,54 @@ describe('SpaceWeatherService.getSolarWindPlasma (array-of-arrays)', () => {
     const ctx = createMockContext();
     const plasma = await svc.getSolarWindPlasma(ctx as never);
 
-    // Must have 2 data rows, not 3 (header row must NOT appear as a data row)
+    // Reads the RTSW feed, not the removed /products/solar-wind/ path.
+    expect(mockFetch.mock.calls[0]![0]).toBe(
+      'https://services.swpc.noaa.gov/json/rtsw/rtsw_wind_1m.json',
+    );
+
+    // Inactive ACE row dropped, both SOLAR1 rows kept.
     expect(plasma).toHaveLength(2);
-    // Time tags must be normalized to ISO 8601 UTC
-    expect(plasma[0]!.timeTag).toBe('2026-06-05T06:00:00.000Z');
-    expect(plasma[0]!.densityPerCm3).toBe(5.2);
-    expect(plasma[0]!.speedKmS).toBe(420.1);
-    expect(plasma[0]!.temperatureK).toBe(80000);
+    expect(plasma.every((p) => p.source === 'SOLAR1')).toBe(true);
+
+    // Oldest-first, despite the feed serving newest-first.
+    expect(plasma[0]!.timeTag).toBe('2026-07-16T04:59:00Z');
+    expect(plasma[1]!.timeTag).toBe('2026-07-16T05:00:00Z');
+
+    // Newest active record is last — the shape the tool reads for `latestPlasma`.
+    expect(plasma.at(-1)!.speedKmS).toBe(475.4);
+    expect(plasma.at(-1)!.densityPerCm3).toBe(4.95);
+    expect(plasma.at(-1)!.temperatureK).toBe(304713);
   });
 
-  it('returns null for fill-value (-9999) fields', async () => {
+  it('returns an empty series when no record is from an active spacecraft', async () => {
     const raw = [
-      ['time_tag', 'density', 'speed', 'temperature'],
-      ['2026-06-05 06:00:00.000', '-9999.0', '-9999.0', '-9999.0'], // fill values
+      {
+        time_tag: '2026-07-16T05:01:00',
+        active: false,
+        source: 'ACE',
+        proton_speed: 448.32,
+        proton_temperature: 108891,
+        proton_density: 1.09,
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(raw));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+
+    expect(await svc.getSolarWindPlasma(ctx as never)).toEqual([]);
+  });
+
+  it('returns null for a missing measurement rather than fabricating a value', async () => {
+    const raw = [
+      {
+        time_tag: '2026-07-16T05:00:00',
+        active: true,
+        source: 'SOLAR1',
+        proton_speed: null,
+        proton_temperature: null,
+        proton_density: null,
+      },
     ];
     mockFetch.mockResolvedValue(makeResponse(raw));
 
@@ -234,6 +303,7 @@ describe('SpaceWeatherService.getSolarWindPlasma (array-of-arrays)', () => {
     expect(plasma[0]!.densityPerCm3).toBeNull();
     expect(plasma[0]!.speedKmS).toBeNull();
     expect(plasma[0]!.temperatureK).toBeNull();
+    expect(plasma[0]!.source).toBe('SOLAR1');
   });
 });
 
@@ -291,15 +361,49 @@ describe('SpaceWeatherService.getSolarRegions', () => {
   });
 });
 
-describe('SpaceWeatherService.getSolarWindMag (array-of-arrays)', () => {
+describe('SpaceWeatherService.getSolarWindMag (RTSW)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it('normalizes mag feed header row and parses all Bz/Bt/Bx/By fields; normalizes space-separated time tags', async () => {
+  it('parses Bz/Bt/Bx/By from the active spacecraft only, orders oldest-first, and normalizes time tags', async () => {
+    // Verbatim records from https://services.swpc.noaa.gov/json/rtsw/rtsw_mag_1m.json.
+    // The inactive IMAP row shares the active row's exact timestamp but reports a
+    // different Bz — reading the wrong row silently reports the wrong storm driver.
     const raw = [
-      ['time_tag', 'bx_gsm', 'by_gsm', 'bz_gsm', 'lon_gsm', 'lat_gsm', 'bt'],
-      ['2026-06-05 06:00:00.000', '1.1', '2.2', '-8.5', '10.0', '5.0', '9.0'],
+      {
+        time_tag: '2026-07-16T05:00:00',
+        active: false,
+        source: 'IMAP',
+        bt: 6.84,
+        bx_gsm: -3.3,
+        by_gsm: 5.46,
+        bz_gsm: 2.41,
+        max_data_flag: 0,
+        overall_quality: 0,
+      },
+      {
+        time_tag: '2026-07-16T05:00:00',
+        active: true,
+        source: 'SOLAR1',
+        bt: 5.97,
+        bx_gsm: -2.7,
+        by_gsm: 4.99,
+        bz_gsm: 1.84,
+        max_data_flag: -9999,
+        overall_quality: 0,
+      },
+      {
+        time_tag: '2026-07-16T04:59:00',
+        active: true,
+        source: 'SOLAR1',
+        bt: 6.0,
+        bx_gsm: -2.31,
+        by_gsm: 5.12,
+        bz_gsm: 2.11,
+        max_data_flag: -9999,
+        overall_quality: 0,
+      },
     ];
     mockFetch.mockResolvedValue(makeResponse(raw));
 
@@ -307,12 +411,26 @@ describe('SpaceWeatherService.getSolarWindMag (array-of-arrays)', () => {
     const ctx = createMockContext();
     const mag = await svc.getSolarWindMag(ctx as never);
 
-    expect(mag).toHaveLength(1);
-    expect(mag[0]!.timeTag).toBe('2026-06-05T06:00:00.000Z'); // normalized from space-separated
-    expect(mag[0]!.bxGsm).toBe(1.1);
-    expect(mag[0]!.byGsm).toBe(2.2);
-    expect(mag[0]!.bzGsm).toBe(-8.5);
-    expect(mag[0]!.bt).toBe(9.0);
+    expect(mockFetch.mock.calls[0]![0]).toBe(
+      'https://services.swpc.noaa.gov/json/rtsw/rtsw_mag_1m.json',
+    );
+
+    expect(mag).toHaveLength(2);
+    expect(mag.every((m) => m.source === 'SOLAR1')).toBe(true);
+
+    // Oldest-first, despite the feed serving newest-first.
+    expect(mag[0]!.timeTag).toBe('2026-07-16T04:59:00Z');
+    expect(mag[1]!.timeTag).toBe('2026-07-16T05:00:00Z');
+
+    // The active row's Bz, not the co-timestamped IMAP row's 2.41.
+    const latest = mag.at(-1)!;
+    expect(latest.bzGsm).toBe(1.84);
+    expect(latest.bt).toBe(5.97);
+    expect(latest.bxGsm).toBe(-2.7);
+    expect(latest.byGsm).toBe(4.99);
+
+    // max_data_flag is -9999 on live active rows; it must not null out the vector.
+    expect(latest.bzGsm).not.toBeNull();
   });
 });
 

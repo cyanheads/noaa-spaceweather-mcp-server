@@ -100,10 +100,18 @@ export interface AuroraForecastData {
 
 // ── Solar wind types ───────────────────────────────────────────────────────
 
-/** One real-time plasma measurement from DSCOVR. */
+/**
+ * One real-time plasma measurement from the spacecraft SWPC currently flags as
+ * active in the RTSW feed. Records are ordered oldest-first.
+ */
 export interface SolarWindPlasma {
-  /** Proton density in particles/cm³. Null when the sensor returns -9999. */
+  /** Proton density in particles/cm³. Null when missing. */
   densityPerCm3: number | null;
+  /**
+   * Reporting spacecraft as named by the feed, e.g. "SOLAR1", "ACE", "IMAP".
+   * Upstream controls this set, so it is an open string rather than a union.
+   */
+  source: string;
   /** Solar wind speed in km/s. Null when missing. */
   speedKmS: number | null;
   /** Proton temperature in Kelvin. Null when missing. */
@@ -112,7 +120,10 @@ export interface SolarWindPlasma {
   timeTag: string;
 }
 
-/** One real-time magnetic field measurement from DSCOVR. */
+/**
+ * One real-time magnetic field measurement from the spacecraft SWPC currently
+ * flags as active in the RTSW feed. Records are ordered oldest-first.
+ */
 export interface SolarWindMag {
   /** Total field magnitude Bt (nT). Null when missing. */
   bt: number | null;
@@ -122,6 +133,11 @@ export interface SolarWindMag {
   byGsm: number | null;
   /** Bz component in GSM coordinates (nT). Null when missing. */
   bzGsm: number | null;
+  /**
+   * Reporting spacecraft as named by the feed, e.g. "SOLAR1", "ACE", "IMAP".
+   * Upstream controls this set, so it is an open string rather than a union.
+   */
+  source: string;
   /** ISO 8601 time tag. */
   timeTag: string;
 }

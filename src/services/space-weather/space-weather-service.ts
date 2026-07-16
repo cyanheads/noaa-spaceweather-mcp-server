@@ -1,8 +1,8 @@
 /**
  * @fileoverview NOAA Space Weather Prediction Center (SWPC) feed client.
  * Wraps keyless public JSON feeds from services.swpc.noaa.gov, normalizes the
- * diverse feed shapes (array-of-arrays, array-of-objects, keyed objects) into
- * clean typed domain records, and exposes per-feed methods used by all tools.
+ * diverse feed shapes (array-of-objects, keyed objects) into clean typed domain
+ * records, and exposes per-feed methods used by all tools.
  * @module services/space-weather/space-weather-service
  */
 
@@ -75,7 +75,7 @@ function gScaleToAuroraLatitude(gScale: number): string {
 
 // ── Shared fetch helper ─────────────────────────────────────────────────────
 
-async function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T> {
+function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T> {
   // Cast ctx to RequestContext for framework utils — Context is structurally
   // compatible but lacks the index signature the type expects.
   const reqCtx = ctx as unknown as RequestContext;
@@ -147,6 +147,15 @@ function normalizeSwpcTime(tag: string): string {
   return `${tag.replace(' ', 'T')}Z`;
 }
 
+/**
+ * Order two records oldest-first by ISO 8601 time tag. The RTSW feeds serve
+ * newest-first; the solar wind domain records are a chronological series, so
+ * ordering is normalized here instead of depending on upstream's.
+ */
+function byTimeTagAscending(a: { timeTag: string }, b: { timeTag: string }): number {
+  return a.timeTag < b.timeTag ? -1 : a.timeTag > b.timeTag ? 1 : 0;
+}
+
 /** Three-letter month abbreviations used in SWPC product datetime lines. */
 const SWPC_MONTHS: Record<string, string> = {
   jan: '01',
@@ -172,27 +181,12 @@ const SWPC_MONTHS: Record<string, string> = {
 function parseSwpcDatetime(raw: string): string | null {
   const m = raw.trim().match(/^(\d{4})\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+UTC$/);
   if (!m) return null;
-  const month = SWPC_MONTHS[m[2]!.toLowerCase()];
+  const [, year, monthAbbr, dayRaw, hhmm] = m;
+  if (!(year && monthAbbr && dayRaw && hhmm)) return null;
+  const month = SWPC_MONTHS[monthAbbr.toLowerCase()];
   if (!month) return null;
-  const day = m[3]!.padStart(2, '0');
-  const hhmm = m[4]!;
-  return `${m[1]}-${month}-${day}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00Z`;
-}
-
-/**
- * Normalize array-of-arrays feed (plasma, mag) with a header row.
- * data[0] is string[] field names; data[1..n] are string[] value rows.
- */
-function normalizeArrayOfArrays(raw: string[][]): Record<string, string>[] {
-  if (raw.length < 2 || !Array.isArray(raw[0])) return [];
-  const headers = raw[0];
-  return raw.slice(1).map((row) => {
-    const obj: Record<string, string> = {};
-    headers.forEach((h, i) => {
-      obj[h] = row[i] ?? '';
-    });
-    return obj;
-  });
+  const day = dayRaw.padStart(2, '0');
+  return `${year}-${month}-${day}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00Z`;
 }
 
 /** Parse a product code prefix to a product type. */
@@ -219,9 +213,9 @@ function parsePhenomenon(id: string): string {
 
 /** Parse numeric level from product code suffix. */
 function parseLevel(id: string): number {
-  const match = id.match(/(\d+)\w*$/);
-  if (!match) return 0;
-  return parseInt(match[1]!, 10);
+  const digits = id.match(/(\d+)\w*$/)?.[1];
+  if (!digits) return 0;
+  return parseInt(digits, 10);
 }
 
 /**
@@ -273,6 +267,36 @@ interface RawAuroraFeed {
   'Data Format': string;
   'Forecast Time': string;
   'Observation Time': string;
+}
+
+/**
+ * One record of the RTSW (Real-Time Solar Wind) plasma feed. The feed interleaves
+ * every reporting spacecraft — only records with `active: true` come from the one
+ * SWPC currently treats as authoritative. Numeric fields arrive as numbers.
+ * Fields the tools don't map (alpha particles, GSE/GSM velocity vectors, per-sensor
+ * quality flags) are omitted from this type.
+ */
+interface RawRtswWind {
+  active: boolean;
+  proton_density: number | null;
+  proton_speed: number | null;
+  proton_temperature: number | null;
+  source: string;
+  time_tag: string;
+}
+
+/**
+ * One record of the RTSW magnetic field feed. Same interleaved-spacecraft shape as
+ * {@link RawRtswWind}; `bt`/`b*_gsm` names already match the domain type.
+ */
+interface RawRtswMag {
+  active: boolean;
+  bt: number | null;
+  bx_gsm: number | null;
+  by_gsm: number | null;
+  bz_gsm: number | null;
+  source: string;
+  time_tag: string;
 }
 
 interface RawXrayFlux {
@@ -392,8 +416,9 @@ export class SpaceWeatherService {
     return {
       today: normalizePeriod(today),
       forecast: (['1', '2', '3'] as const)
-        .filter((k) => raw[k] != null)
-        .map((k) => normalizePeriod(raw[k]!)),
+        .map((k) => raw[k])
+        .filter((p): p is RawScalesPeriod => p != null)
+        .map((p) => normalizePeriod(p)),
     };
   }
 
@@ -462,37 +487,44 @@ export class SpaceWeatherService {
 
   // ── Solar Wind ──────────────────────────────────────────────────────────
 
-  /** Fetch solar wind plasma (7-day, array-of-arrays format). */
+  /**
+   * Fetch solar wind plasma from the RTSW feed (roughly the last 24 hours at
+   * 1-minute cadence). Keeps only the spacecraft SWPC flags active — the feed
+   * interleaves every reporting spacecraft, and `overall_quality` is uniformly 0,
+   * so `active` is the only discriminating signal.
+   */
   async getSolarWindPlasma(ctx: Context): Promise<SolarWindPlasma[]> {
-    const raw = await fetchFeed<string[][]>(
-      '/products/solar-wind/plasma-7-day.json',
-      ctx,
-      this.userAgent,
-    );
-    const rows = normalizeArrayOfArrays(raw);
-    return rows.map((r) => ({
-      timeTag: normalizeSwpcTime(r['time_tag'] ?? ''),
-      densityPerCm3: parseNum(r['density']),
-      speedKmS: parseNum(r['speed']),
-      temperatureK: parseNum(r['temperature']),
-    }));
+    const raw = await fetchFeed<RawRtswWind[]>('/json/rtsw/rtsw_wind_1m.json', ctx, this.userAgent);
+    return raw
+      .filter((r) => r.active)
+      .map((r) => ({
+        timeTag: normalizeSwpcTime(r.time_tag),
+        source: r.source,
+        densityPerCm3: parseNum(r.proton_density),
+        speedKmS: parseNum(r.proton_speed),
+        temperatureK: parseNum(r.proton_temperature),
+      }))
+      .sort(byTimeTagAscending);
   }
 
-  /** Fetch solar wind magnetic field (7-day, array-of-arrays format). */
+  /**
+   * Fetch solar wind magnetic field from the RTSW feed (roughly the last 24 hours
+   * at 1-minute cadence). Filtered to the active spacecraft like
+   * {@link SpaceWeatherService.getSolarWindPlasma}.
+   */
   async getSolarWindMag(ctx: Context): Promise<SolarWindMag[]> {
-    const raw = await fetchFeed<string[][]>(
-      '/products/solar-wind/mag-7-day.json',
-      ctx,
-      this.userAgent,
-    );
-    const rows = normalizeArrayOfArrays(raw);
-    return rows.map((r) => ({
-      timeTag: normalizeSwpcTime(r['time_tag'] ?? ''),
-      bxGsm: parseNum(r['bx_gsm']),
-      byGsm: parseNum(r['by_gsm']),
-      bzGsm: parseNum(r['bz_gsm']),
-      bt: parseNum(r['bt']),
-    }));
+    const raw = await fetchFeed<RawRtswMag[]>('/json/rtsw/rtsw_mag_1m.json', ctx, this.userAgent);
+    return raw
+      .filter((r) => r.active)
+      .map((r) => ({
+        timeTag: normalizeSwpcTime(r.time_tag),
+        source: r.source,
+        bxGsm: parseNum(r.bx_gsm),
+        byGsm: parseNum(r.by_gsm),
+        bzGsm: parseNum(r.bz_gsm),
+        bt: parseNum(r.bt),
+      }))
+      .sort(byTimeTagAscending);
   }
 
   // ── Solar Activity ──────────────────────────────────────────────────────
@@ -521,7 +553,11 @@ export class SpaceWeatherService {
     // Filter to the most recent observed_date to return only currently active regions.
     const mostRecentDate = raw.length > 0 ? raw[0]?.observed_date : null;
     return raw
-      .filter((r) => r.location != null && r.observed_date === mostRecentDate) // most recent date only, skip tombstones
+      .filter(
+        // most recent date only, skip tombstones
+        (r): r is RawSolarRegion & { location: string } =>
+          r.location != null && r.observed_date === mostRecentDate,
+      )
       .map((r) => {
         // latitude is a bare integer in the live feed (e.g. 17, -5).
         // Normalize to heliographic string ("N17", "S05") to match the declared output type.
@@ -533,7 +569,7 @@ export class SpaceWeatherService {
           observedDate: r.observed_date,
           region: r.region,
           latitude: latStr,
-          location: r.location!,
+          location: r.location,
           spotClass: r.spot_class ?? '',
           numberSpots: r.number_spots ?? 0,
           magClass: r.mag_class ?? '',
@@ -556,8 +592,8 @@ export class SpaceWeatherService {
     // Each entry embeds a 3-day outlook via _1_day / _2_day / _3_day columns.
     // Take only the most recent entry (index 0) and expand its 3-day outlook
     // into three records, advancing the date by 0, 1, and 2 days respectively.
-    if (raw.length === 0) return [];
-    const latest = raw[0]!;
+    const latest = raw[0];
+    if (!latest) return [];
     // Normalize to UTC: the date field is "2026-06-04T00:00:00" without a 'Z',
     // so new Date() would interpret it as local time. Append 'Z' to force UTC.
     const rawDate = latest.date.endsWith('Z') ? latest.date : `${latest.date}Z`;

@@ -9,7 +9,7 @@
 | `noaa_spaceweather_get_conditions` | Current space-weather snapshot: NOAA R/S/G storm scales (today + 3-day forecast), latest Kp index, and a plain-language status summary. The "is anything happening right now?" heartbeat tool. | _(none required)_ | `readOnlyHint: true`, `openWorldHint: true` |
 | `noaa_spaceweather_get_kp_index` | Planetary K-index (0–9 geomagnetic activity scale) — recent observed 3-hour values with their NOAA G-scale equivalents and aurora-latitude guidance, plus the 3-day forecast series. Primary driver of aurora visibility and geomagnetic storm severity. | `window_days` (`z.number().int().min(1).max(7)`, default 1) | `readOnlyHint: true`, `openWorldHint: true` |
 | `noaa_spaceweather_get_aurora_forecast` | OVATION model aurora forecast for the next ~30–60 min: global grid of aurora probability percentages by lat/lon. With optional coordinates, returns local visibility probability, minimum Kp needed at that latitude, and a plain-language go/no-go. | `latitude` (−90–90, optional), `longitude` (−180–180, optional) | `readOnlyHint: true`, `openWorldHint: true` |
-| `noaa_spaceweather_get_solar_wind` | Real-time solar wind from DSCOVR: speed (km/s), proton density (n/cm³), temperature, and the critical Bz component (southward = storm driver). Recent time series. Explains why current geomagnetic conditions exist. | `window_hours` (`z.number().int().min(1).max(168)`, default 3) | `readOnlyHint: true`, `openWorldHint: true` |
+| `noaa_spaceweather_get_solar_wind` | Real-time solar wind from the active L1 spacecraft: speed (km/s), proton density (n/cm³), temperature, and the critical Bz component (southward = storm driver). Recent time series, each record tagged with its reporting spacecraft. Explains why current geomagnetic conditions exist. | `window_hours` (`z.number().int().min(1).max(168)`, default 3) | `readOnlyHint: true`, `openWorldHint: true` |
 | `noaa_spaceweather_get_solar_activity` | Solar flare and radiation storm picture: recent X-ray flux from GOES, 3-day flare-class probabilities (C/M/X), active solar regions with per-region flare probability, solar radiation storm level, and proton flux at ≥10 MeV. For operators tracking HF radio blackout and radiation storm risk. | `include_regions` (bool, default true) | `readOnlyHint: true`, `openWorldHint: true` |
 | `noaa_spaceweather_get_alerts` | Active SWPC alerts, watches, and warnings — parsed into structured records with product type, severity level, issue time, validity window, and plain text. Covers geomagnetic storms, radio blackouts, radiation storms, and aurora bulletins. | `active_only` (bool, default true) | `readOnlyHint: true`, `openWorldHint: true` |
 
@@ -52,7 +52,7 @@ Part of the NOAA cluster (`nws-weather` for terrestrial forecasts, `noaa-cdo` fo
 |:--------|:------|:--------|
 | `SpaceWeatherService` | NOAA SWPC JSON feeds via `fetchWithTimeout` + `withRetry` | All tools |
 
-Single service — all six tools call into the same service. The service exposes per-feed methods that normalize the diverse shapes (array-of-arrays, array-of-objects, keyed objects) into clean typed records. Handlers assemble tool responses from composed service calls.
+Single service — all six tools call into the same service. The service exposes per-feed methods that normalize the diverse shapes (array-of-objects, keyed objects, coordinate triples) into clean typed records. Handlers assemble tool responses from composed service calls.
 
 ---
 
@@ -72,7 +72,7 @@ No `server-config.ts` needed — no domain-specific config beyond what the frame
 2. **`noaa_spaceweather_get_conditions`** — composes scales + Kp current; simplest integration test of the service.
 3. **`noaa_spaceweather_get_alerts`** — pure feed parse; no interpretation beyond product-code parsing.
 4. **`noaa_spaceweather_get_kp_index`** — Kp series + forecast; validates the array-of-objects normalization.
-5. **`noaa_spaceweather_get_solar_wind`** — plasma + mag feeds (array-of-arrays); validates the header-row normalization.
+5. **`noaa_spaceweather_get_solar_wind`** — RTSW plasma + mag feeds; validates the active-spacecraft filter and the oldest-first ordering.
 6. **`noaa_spaceweather_get_solar_activity`** — X-ray flux + solar regions + probabilities; most complex assembly.
 7. **`noaa_spaceweather_get_aurora_forecast`** — OVATION grid; coordinate lookup and local probability extraction.
 
@@ -102,7 +102,7 @@ Baseline infrastructure errors (`InternalError`, `Timeout`, `SerializationError`
 | Storm scales (R/S/G) | get current + 3-day forecast | `noaa-scales.json` |
 | Planetary K-index | list recent observed, list forecast | `noaa-planetary-k-index.json`, `noaa-planetary-k-index-forecast.json` |
 | Aurora forecast | get current OVATION grid, lookup by coordinate | `ovation_aurora_latest.json` |
-| Solar wind | list recent plasma series, list recent mag series | `solar-wind/plasma-7-day.json`, `solar-wind/mag-7-day.json` |
+| Solar wind | list recent plasma series, list recent mag series | `json/rtsw/rtsw_wind_1m.json`, `json/rtsw/rtsw_mag_1m.json` |
 | Solar activity | get X-ray flux series, get active regions, get flare probabilities | `goes/primary/xrays-7-day.json`, `solar_regions.json`, `solar_probabilities.json` |
 | Alerts | list active alerts/watches/warnings | `products/alerts.json` |
 
@@ -120,7 +120,15 @@ Baseline infrastructure errors (`InternalError`, `Timeout`, `SerializationError`
 
 **Aurora tool accepts optional coordinates, not required.** The global OVATION grid is useful without coordinates (for general awareness), but the primary user goal ("can I see the aurora from here?") requires a coordinate. Making coordinates optional serves both cases without splitting into two tools.
 
-**`window_hours`/`window_days` parameters on time-series tools.** Solar wind and Kp are time series. Defaulting to the last 1–3 hours covers the "current conditions" case; allowing up to 7 days covers operators tracking trends. The service fetches the 7-day feed once and slices client-side — no extra upstream calls per window size.
+**`window_hours`/`window_days` parameters on time-series tools.** Solar wind and Kp are time series. Defaulting to the last 1–3 hours covers the "current conditions" case; a larger window covers operators tracking trends. The service fetches each feed once and slices client-side — no extra upstream calls per window size.
+
+**`window_hours` keeps its 1–168 range after the RTSW port, even though the feed spans ~24h.** SWPC removed `/products/solar-wind/`; its RTSW replacement carries roughly 24 hours, so windows beyond that can't be satisfied. Narrowing the validator to 24 would reject inputs that used to be valid — a breaking change to the tool's contract for no gain, since an over-wide window is not an error, it just returns the whole feed. Instead the range is documented and the response reports feed freshness (below), so the caller can tell "quiet" from "stale" rather than guessing.
+
+**Empty windows report feed freshness instead of a bare empty array.** `latestFeedPlasmaTime`, `latestFeedMagTime`, and `feedStalenessHours` are read from the unwindowed series and always populated, so a caller that gets no rows can see what the feed actually holds. The human-readable advisory rides `ctx.enrich.notice()` rather than an output field: the framework mirrors enrichment into both `structuredContent` and the `content[]` trailer, and a plain `notice` output field would instead trip the linter's `enrichment-prefer-block` rule.
+
+**Solar wind filters to the spacecraft SWPC flags `active`.** The RTSW feeds interleave every reporting spacecraft (`SOLAR1`, `ACE`, `IMAP`), and `overall_quality` is uniformly `0`, so `active` is the only discriminating signal. Records carry their `source` rather than the tool naming a satellite — the removed feed exposed no source at all, so the tool hardcoded `DSCOVR` and simply asserted it; RTSW reports the spacecraft per record, so echoing the feed survives the next roster change.
+
+**The service normalizes solar wind ordering to oldest-first.** RTSW serves newest-first, the removed feed served oldest-first, and the tool's "latest = last element" contract plus its rendered time series both assume chronological order. Sorting in the service makes ordering an explicit invariant of the domain type instead of an accident of upstream.
 
 **Bz is surfaced prominently in solar wind output.** Southward Bz (negative) is the primary driver of geomagnetic storm development. It belongs in the summary and format output as a first-class field, not buried in a metrics array.
 
@@ -140,8 +148,8 @@ Baseline infrastructure errors (`InternalError`, `Timeout`, `SerializationError`
 | K-index observed | `/products/noaa-planetary-k-index.json` | Array of objects | `time_tag` (ISO), `Kp` (float), `a_running`, `station_count` |
 | K-index forecast | `/products/noaa-planetary-k-index-forecast.json` | Array of objects | `time_tag`, `kp` (float), `observed` (`"observed"` or `"predicted"`), `noaa_scale` (nullable) |
 | Aurora (OVATION) | `/json/ovation_aurora_latest.json` | Object with top-level metadata + `coordinates` array | `Observation Time`, `Forecast Time`, `Data Format` (`"[Longitude, Latitude, Aurora]"`), `coordinates` (array of `[lon, lat, aurora%]` triples) |
-| Solar wind plasma | `/products/solar-wind/plasma-7-day.json` | **Array-of-arrays** with header row | Header: `["time_tag","density","speed","temperature"]`; data rows: string values |
-| Solar wind mag | `/products/solar-wind/mag-7-day.json` | **Array-of-arrays** with header row | Header: `["time_tag","bx_gsm","by_gsm","bz_gsm","lon_gsm","lat_gsm","bt"]`; data rows: string values |
+| Solar wind plasma (RTSW) | `/json/rtsw/rtsw_wind_1m.json` | Array of objects, newest-first, spacecraft interleaved | `time_tag` (T-separated, no `Z`), `active` (bool), `source` (e.g. `SOLAR1`, `ACE`, `IMAP`), `proton_speed`, `proton_density`, `proton_temperature` (numbers) |
+| Solar wind mag (RTSW) | `/json/rtsw/rtsw_mag_1m.json` | Array of objects, newest-first, spacecraft interleaved | `time_tag`, `active`, `source`, `bt`, `bx_gsm`, `by_gsm`, `bz_gsm` (numbers). `max_data_flag` is `-9999` on live active rows and is not mapped |
 | GOES X-ray flux | `/json/goes/primary/xrays-7-day.json` | Array of objects | `time_tag` (ISO Z), `satellite` (int), `flux` (float, W/m²), `observed_flux`, `electron_correction`, `electron_contaminaton`, `energy` (`"0.05-0.4nm"` or `"0.1-0.8nm"`) |
 | Solar regions | `/json/solar_regions.json` | Array of objects | `observed_date`, `region` (int, NOAA AR number), `latitude`, `longitude`, `location` (e.g. `N17E47`), `area`, `spot_class`, `number_spots`, `mag_class`, `c_flare_probability`, `m_flare_probability`, `x_flare_probability`, `proton_probability` |
 | Solar probabilities | `/json/solar_probabilities.json` | Array of objects | `date` (ISO), `c_class_1_day`, `m_class_1_day`, `x_class_1_day`, `10mev_protons_1_day`, etc. (int %) for days 1–3, `polar_cap_absorption` |
@@ -188,7 +196,7 @@ Product codes follow `{type}{level}{band}` convention. Key prefixes:
 
 **NOAA scales key semantics:** Key `"0"` = today, keys `"1"`–`"3"` = next 3 days, `"-1"` = yesterday. Each entry has both `DateStamp` (date string) and `TimeStamp` (HH:MM:SS UTC) — use both for freshness display. Warning: keys `"0"` and `"1"` frequently share the same `DateStamp` when the current forecast period extends past midnight UTC into the next calendar day; do not deduplicate by date.
 
-**Array-of-arrays:** `plasma-7-day.json` and `mag-7-day.json` use `[header_row, ...data_rows]` where `data[0]` is `string[]` field names and `data[1..n]` are `string[]` value rows. The service must detect this shape (check `Array.isArray(data[0])`) and zip header + row into objects before returning. All values are strings — coerce numerics explicitly.
+**RTSW solar wind:** `rtsw_wind_1m.json` and `rtsw_mag_1m.json` are arrays of objects, served newest-first, interleaving every reporting spacecraft. The service keeps only `active: true` records (`overall_quality` is uniformly `0`, so it discriminates nothing), carries each record's `source`, and sorts oldest-first to match the chronological series the tool renders. Values are already numbers. `time_tag` is T-separated without a `Z` — `normalizeSwpcTime` appends one. The tool compares epoch millis rather than ISO strings when windowing: RTSW tags carry no milliseconds and so don't collate against a `toISOString()` cutoff that does. Plasma and mag agree on the active source at every shared timestamp, so the two feeds need no cross-reconciliation.
 
 **OVATION coordinates:** `coordinates` is an array of `[longitude, latitude, aurora_probability%]` triples (integers). For a given coordinate lookup, find the nearest grid point (1° resolution, 360 longitudes × 181 latitudes) and return its aurora probability.
 
