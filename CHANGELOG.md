@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-07-16
+
+get_alerts level and phenomenon now derive from the NOAA scale the message body states instead of the code suffix, correcting severity and phenomenon for most live product codes; a new cancelled field flags cancellation notices, which active_only now excludes, and noaaScale exposes the raw scale
+
 ## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-07-15
 
 get_solar_wind ports from the removed DSCOVR feeds to SWPC's RTSW feeds, adding a per-record spacecraft source and feed-freshness reporting for empty windows; mcp-ts-core ^0.10.10 → ^0.10.14 with new supply-chain install guards
