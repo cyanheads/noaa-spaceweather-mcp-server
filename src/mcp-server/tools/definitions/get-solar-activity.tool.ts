@@ -19,7 +19,7 @@ function classifyFlare(fluxWm2: number): string {
 /** Format X-ray flux to 2 significant digits in scientific notation, e.g. 1.4e-6. */
 function formatFlux(fluxWm2: number): string {
   // toPrecision gives "1.40e-6" style; strip trailing zeros after decimal for readability.
-  return fluxWm2.toExponential(1) + ' W/m²';
+  return `${fluxWm2.toExponential(1)} W/m²`;
 }
 
 /**
