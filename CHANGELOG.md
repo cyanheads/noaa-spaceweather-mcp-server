@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-08-25
+
+adopts mcp-ts-core 0.12.3 and the MCP SDK v2 stack, adding modern 2026-07-28 and legacy protocol support, strict tool-input validation, and consistent stateless HTTP serving
+
 ## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-07-16
 
 get_alerts level and phenomenon now derive from the NOAA scale the message body states instead of the code suffix, correcting severity and phenomenon for most live product codes; a new cancelled field flags cancellation notices, which active_only now excludes, and noaaScale exposes the raw scale

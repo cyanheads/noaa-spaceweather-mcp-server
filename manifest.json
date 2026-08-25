@@ -1,9 +1,13 @@
 {
   "manifest_version": "0.3",
   "name": "noaa-spaceweather-mcp-server",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "NOAA SWPC space weather: storm scales, Kp index, aurora forecasts, solar wind, activity, alerts.",
-  "author": { "name": "cyanheads" },
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/cyanheads/noaa-spaceweather-mcp-server"

@@ -1,10 +1,9 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-07-16 05:56:28
+Generated on: 2026-08-25 02:09:46
 
 ```text
 noaa-spaceweather-mcp-server/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -15,6 +14,8 @@ noaa-spaceweather-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
 │   └── SECURITY.md
 ├── .vscode/
