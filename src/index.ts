@@ -11,6 +11,7 @@ import { initSpaceWeatherService } from './services/space-weather/space-weather-
 await createApp({
   name: 'noaa-spaceweather-mcp-server',
   title: 'noaa-spaceweather-mcp-server',
+  sessionMode: 'stateless',
   tools: allToolDefinitions,
   resources: [],
   prompts: [],
