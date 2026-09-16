@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.12-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/noaa-spaceweather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/noaa-spaceweather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/noaa-spaceweather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.13-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/noaa-spaceweather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/noaa-spaceweather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/noaa-spaceweather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -27,9 +27,11 @@
 
 ---
 
-## Tools
+## Overview
 
-Six tools covering the full NOAA SWPC space weather surface — from a quick status heartbeat to deep solar and geomagnetic data:
+Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic storm scales, Kp index, aurora forecasts, solar wind, solar activity, and active alerts. Query current conditions, aurora visibility at a coordinate, or windowed plasma and magnetic-field time series from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:-----|:------------|
@@ -40,85 +42,68 @@ Six tools covering the full NOAA SWPC space weather surface — from a quick sta
 | `noaa_spaceweather_get_solar_activity` | Solar flare picture: GOES X-ray flux, 3-day flare-class probabilities, active solar regions with per-region probabilities, and solar radiation storm level |
 | `noaa_spaceweather_get_alerts` | Active SWPC alerts, watches, and warnings — structured records with product type, severity, issue time, validity window, and full message text |
 
-### `noaa_spaceweather_get_conditions`
+## Capability reference
 
-The heartbeat tool. Use it first — it composes storm scales + current Kp into a single snapshot with a plain-language summary.
+### `noaa_spaceweather_get_conditions` <sub>tool</sub>
 
-- Returns today's R/S/G storm scales plus a 3-day forecast
+- No inputs — a single call composing storm scales and current Kp into one snapshot
+- Returns today's R/S/G storm scales plus a 3-day forecast series
 - Current Kp with G-scale equivalent and aurora-visibility latitude guidance
-- Plain-language summary: "Quiet conditions" vs. "G2 moderate geomagnetic storm in progress"
-- Data sourced from `noaa-scales.json` + `noaa-planetary-k-index.json`
+- Data sourced from the `noaa-scales.json` + `noaa-planetary-k-index.json` feeds
 
 ---
 
-### `noaa_spaceweather_get_kp_index`
+### `noaa_spaceweather_get_kp_index` <sub>tool</sub>
 
-Planetary K-index time series for geomagnetic activity tracking.
-
-- `window_days` parameter (1–7, default 1) — recent 3-hour observed values
-- Each record includes Kp value, G-scale equivalent, aurora-latitude guidance, and observation time
-- Separate 3-day forecast series with predicted Kp and NOAA G-scale labels
-
----
-
-### `noaa_spaceweather_get_aurora_forecast`
-
-OVATION model aurora probability at 1° resolution, updated every ~5 minutes.
-
-- Without coordinates: global metadata — grid point count, global peak probability, peak region
-- With coordinates (`latitude`, `longitude`): nearest-grid-point lookup, minimum Kp required at that latitude, and a plain-language verdict ("Good aurora chance (42%) — Kp≥6 needed at this latitude")
-- Covers both hemispheres; coordinates are geographic (WGS84)
+- `window_days` (1–7, default 1) bounds the observed series; the forecast series is always SWPC's full 3-day forecast
+- Each observed/forecast record carries Kp, G-scale equivalent, G-scale label, and aurora-latitude guidance
+- Forecast excludes the feed's embedded historical "observed" entries — only forward-looking `estimated`/`predicted` rows
+- `observedCount` reports how many observed readings matched the window
 
 ---
 
-### `noaa_spaceweather_get_solar_wind`
+### `noaa_spaceweather_get_aurora_forecast` <sub>tool</sub>
 
-Real-time solar wind plasma and magnetic field from SWPC's RTSW feeds.
-
-- Reads the spacecraft SWPC flags as active; every record names its `source`, so no satellite is assumed
-- `window_hours` parameter (1–168, default 3) — sliced client-side from a feed that carries roughly the last 24 hours at 1-minute cadence
-- Reports `latestFeedPlasmaTime`, `latestFeedMagTime`, and `feedStalenessHours` so an empty window is distinguishable from a stale feed
-- Plasma: speed (km/s), proton density (n/cm³), temperature
-- Bz component (southward Bz = storm driver) surfaced prominently in output and format
-- Bt (total field magnitude) and GSM vector components
+- Without coordinates: global metadata only — grid point count, global peak probability, peak region
+- With `latitude`/`longitude` (WGS84, required together): nearest 1°-grid lookup, minimum Kp needed at that latitude, and a plain-language go/no-go verdict
+- `invalid_coordinates` error when only one of the pair is supplied
+- OVATION model updates every ~5 minutes; forecast horizon is ~30–60 minutes ahead
 
 ---
 
-### `noaa_spaceweather_get_solar_activity`
+### `noaa_spaceweather_get_solar_wind` <sub>tool</sub>
 
-Solar flare and radiation storm picture from GOES and SWPC probabilities.
-
-- GOES primary X-ray flux in the 0.1–0.8 nm band (R-scale driver)
-- 3-day C/M/X flare-class probabilities
-- Active solar regions with per-region flare and proton probabilities when `include_regions: true` (default)
-- Solar radiation storm (S-scale) level from ≥10 MeV integral proton flux
+- `window_hours` (1–168, default 3) slices client-side from a feed that carries roughly the last 24 hours at ~1-minute cadence
+- Plasma (speed, density, temperature) and magnetic field (Bx/By/Bz/Bt GSM) returned as separate oldest-first series
+- `bzStatus` surfaces southward Bz (the storm driver) as a plain-language field
+- `latestFeedPlasmaTime`/`latestFeedMagTime`/`feedStalenessHours` distinguish an empty window from a stale feed
+- Every record names its reporting spacecraft — no satellite is assumed as "the" active one
 
 ---
 
-### `noaa_spaceweather_get_alerts`
+### `noaa_spaceweather_get_solar_activity` <sub>tool</sub>
 
-Active SWPC alerts, watches, and warnings from the `products/alerts.json` feed.
+- `include_regions` (default true) toggles per-region active-solar-region detail to control response size
+- GOES X-ray flux (0.1–0.8 nm) with flare-class letter (A/B/C/M/X); recent readings cover the past hour
+- 3-day C/M/X flare-class and proton-event probabilities, each duplicated under a legacy `*1Day` name and a date-neutral name
+- Integral proton flux (≥10 MeV) drives the reported NOAA S-scale (0–5)
 
-- Structured product metadata: type (Watch/Warning/Alert/Summary), issue time, and ISO 8601 validity window parsed from the message body (`Valid From`/`To`, `Now Valid Until`, or `Begin`/`End Time`)
-- Severity read from the NOAA scale stated in the message body (`noaaScale` e.g. `"G1"`, plus `level` 0–5); products stating no scale report level `0`
-- Cancellation notices flagged (`cancelled`) and excluded from the active set
-- Filtered to active-only by default (`active_only: true`); set `false` for recent history, including cancellations
-- Full raw message text preserved for downstream display
+---
+
+### `noaa_spaceweather_get_alerts` <sub>tool</sub>
+
+- `active_only` (default true) — in-force Warnings/Watches/Alerts only; cancellations and Summaries excluded
+- `max_age_hours` (1–720, default 48) bounds how far back to look; the SWPC feed itself has no expiry
+- Each record carries product type, NOAA scale + level (0 means "no scale stated," not zero severity), parsed validity window, and full message text
+- `cancelled` flags a record that cancels a prior product rather than being active
 
 ---
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
-- Declarative tool definitions — single file per tool, framework handles registration and validation
-- Unified error handling — handlers throw, framework catches, classifies, and formats
-- Pluggable auth: `none`, `jwt`, `oauth`
-- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
-- Structured logging with optional OpenTelemetry tracing
-- STDIO and Streamable HTTP transports
-
-Space weather domain:
+SWPC-specific:
 
 - All SWPC feeds are public and keyless — no API keys required
 - Single `SpaceWeatherService` wraps all six NOAA SWPC JSON feeds with `fetchWithTimeout` + `withRetry`
@@ -328,7 +313,7 @@ See [`CLAUDE.md`/`AGENTS.md`](./CLAUDE.md) for development guidelines and archit
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck

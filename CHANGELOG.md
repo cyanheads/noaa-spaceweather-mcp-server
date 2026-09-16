@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.13](changelog/0.1.x/0.1.13.md) — 2026-09-16
+
+adopts mcp-ts-core 0.13.2 — stateless session default, session-mode server card metadata, argument-rejection structuredContent, Bun 1.4 engines floor
+
 ## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-08-25
 
 adopts mcp-ts-core 0.12.3 and the MCP SDK v2 stack, adding modern 2026-07-28 and legacy protocol support, strict tool-input validation, and consistent stateless HTTP serving
