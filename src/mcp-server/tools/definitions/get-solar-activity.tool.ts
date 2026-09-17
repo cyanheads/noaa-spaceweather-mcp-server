@@ -63,11 +63,31 @@ const SolarRegionSchema = z
     spotClass: z.string().describe('Sunspot morphology class.'),
     numberSpots: z.number().describe('Number of sunspots in this region.'),
     magClass: z.string().describe('Magnetic field class.'),
-    cFlareProbability: z.number().describe('Probability of a C-class flare (%).'),
-    mFlareProbability: z.number().describe('Probability of an M-class flare (%).'),
-    xFlareProbability: z.number().describe('Probability of an X-class flare (%).'),
-    protonProbability: z.number().describe('Probability of a proton event (%).'),
-    observedDate: z.string().describe('Date this region data was observed.'),
+    cFlareProbability: z
+      .number()
+      .describe(
+        'Probability of a C-class flare from this region (%), for the UTC day AFTER observedDate — SWPC issues each day’s region probabilities against the previous day’s observation.',
+      ),
+    mFlareProbability: z
+      .number()
+      .describe(
+        'Probability of an M-class flare from this region (%), for the UTC day AFTER observedDate — SWPC issues each day’s region probabilities against the previous day’s observation.',
+      ),
+    xFlareProbability: z
+      .number()
+      .describe(
+        'Probability of an X-class flare from this region (%), for the UTC day AFTER observedDate — SWPC issues each day’s region probabilities against the previous day’s observation.',
+      ),
+    protonProbability: z
+      .number()
+      .describe(
+        'Probability of a proton event from this region (%), for the UTC day AFTER observedDate — SWPC issues each day’s region probabilities against the previous day’s observation.',
+      ),
+    observedDate: z
+      .string()
+      .describe(
+        'UTC date this region was observed. The four probability fields on this record cover the following day, not this one.',
+      ),
   })
   .describe('One active solar region with flare probabilities.');
 
@@ -162,9 +182,17 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     {
       reason: 'feed_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SWPC endpoint returns non-OK status or times out after retries.',
+      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried before failing.',
       retryable: true,
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
+    },
+    {
+      reason: 'feed_moved',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'SWPC feed path returns a permanent 4xx (404, 410, 401, 403). Fails in one attempt.',
+      retryable: false,
+      recovery:
+        'Retrying will not help — the SWPC feed path no longer resolves or no longer has the expected shape; the feed URL needs updating against SWPC current inventory.',
     },
   ],
 

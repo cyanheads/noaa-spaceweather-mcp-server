@@ -8,10 +8,10 @@
 |:-----|:------------|:-----------|:------------|
 | `noaa_spaceweather_get_conditions` | Current space-weather snapshot: NOAA R/S/G storm scales (today + 3-day forecast), latest Kp index, and a plain-language status summary. The "is anything happening right now?" heartbeat tool. | _(none required)_ | `readOnlyHint: true`, `openWorldHint: true` |
 | `noaa_spaceweather_get_kp_index` | Planetary K-index (0–9 geomagnetic activity scale) — recent observed 3-hour values with their NOAA G-scale equivalents and aurora-latitude guidance, plus the 3-day forecast series. Primary driver of aurora visibility and geomagnetic storm severity. | `window_days` (`z.number().int().min(1).max(7)`, default 1) | `readOnlyHint: true`, `openWorldHint: true` |
-| `noaa_spaceweather_get_aurora_forecast` | OVATION model aurora forecast for the next ~30–60 min: global grid of aurora probability percentages by lat/lon. With optional coordinates, returns local visibility probability, minimum Kp needed at that latitude, and a plain-language go/no-go. | `latitude` (−90–90, optional), `longitude` (−180–180, optional) | `readOnlyHint: true`, `openWorldHint: true` |
+| `noaa_spaceweather_get_aurora_forecast` | OVATION model aurora forecast for the next ~30–60 min: global grid of aurora probability percentages by lat/lon. With optional coordinates, returns local visibility probability, the geomagnetic latitude those coordinates convert to, the minimum Kp and G level needed at that geomagnetic latitude, and a plain-language go/no-go. | `latitude` (−90–90, optional), `longitude` (−180–180, optional) | `readOnlyHint: true`, `openWorldHint: true` |
 | `noaa_spaceweather_get_solar_wind` | Real-time solar wind from the active L1 spacecraft: speed (km/s), proton density (n/cm³), temperature, and the critical Bz component (southward = storm driver). Recent time series, each record tagged with its reporting spacecraft. Explains why current geomagnetic conditions exist. | `window_hours` (`z.number().int().min(1).max(168)`, default 3) | `readOnlyHint: true`, `openWorldHint: true` |
 | `noaa_spaceweather_get_solar_activity` | Solar flare and radiation storm picture: recent X-ray flux from GOES, 3-day flare-class probabilities (C/M/X), active solar regions with per-region flare probability, solar radiation storm level, and proton flux at ≥10 MeV. For operators tracking HF radio blackout and radiation storm risk. | `include_regions` (bool, default true) | `readOnlyHint: true`, `openWorldHint: true` |
-| `noaa_spaceweather_get_alerts` | Active SWPC alerts, watches, and warnings — parsed into structured records with product type, severity level, issue time, validity window, and plain text. Covers geomagnetic storms, radio blackouts, radiation storms, and aurora bulletins. | `active_only` (bool, default true) | `readOnlyHint: true`, `openWorldHint: true` |
+| `noaa_spaceweather_get_alerts` | Active SWPC alerts, watches, and warnings — parsed into structured records with product type, severity level, issue time, serial number, validity window, and plain text. Covers geomagnetic storms, radio blackouts, radiation storms, and aurora bulletins. | `active_only` (bool, default true), `max_age_hours` (`z.number().min(1).max(720)`, default 48) | `readOnlyHint: true`, `openWorldHint: true` |
 
 ### Resources
 
@@ -25,7 +25,7 @@ _(none — data/action-oriented server)_
 
 ## Overview
 
-`noaa-spaceweather-mcp-server` wraps NOAA's Space Weather Prediction Center (SWPC) public JSON feeds — all keyless, free, and served from `services.swpc.noaa.gov`. It translates raw space-weather indices and grids into meaningful, agent-ready output: Kp 7 becomes "G3 storm — aurora possible to ~45° geomagnetic latitude"; a southward Bz becomes "storm-driving conditions"; an X1.0 flare becomes "R3 radio blackout in progress." Interpretation is the value.
+`noaa-spaceweather-mcp-server` wraps NOAA's Space Weather Prediction Center (SWPC) public JSON feeds — all keyless, free, and served from `services.swpc.noaa.gov`. It translates raw space-weather indices and grids into meaningful, agent-ready output: Kp 7 becomes "G3 storm — aurora possible to ~50° geomagnetic latitude"; a southward Bz becomes "storm-driving conditions"; an X1.0 flare becomes "R3 radio blackout in progress." Interpretation is the value.
 
 **Audience:** Aurora chasers, HF radio and satellite/GPS operators, power-grid and aviation planners, and agents answering "can I see the aurora tonight?" or "is a geomagnetic storm happening?"
 
@@ -82,16 +82,17 @@ Each step is independently testable. Service methods can be unit-tested directly
 
 ## Error Contracts
 
-Typed error contracts for each tool — becomes the literal `errors: [...]` entries during scaffolding.
+The `errors: [...]` entries each tool declares, inline per tool.
 
-| Tool | reason | code | when | recovery |
-|:-----|:-------|:-----|:-----|:---------|
-| all tools | `feed_unavailable` | `ServiceUnavailable` | SWPC endpoint returns non-OK or times out | Retry in 30–60 s; SWPC feeds occasionally lag during high-activity events |
-| `get_aurora_forecast` | `invalid_coordinates` | `InvalidParams` | `latitude` outside −90–90 or `longitude` outside −180–180 | Provide latitude in range [−90, 90] and longitude in range [−180, 180] |
-| `get_solar_wind` | `invalid_window` | `InvalidParams` | `window_hours` outside 1–168 | Use a value between 1 and 168 |
-| `get_kp_index` | `invalid_window` | `InvalidParams` | `window_days` outside 1–7 | Use a value between 1 and 7 |
+| Tool | reason | code | retryable | when | recovery |
+|:-----|:-------|:-----|:----------|:-----|:---------|
+| all tools | `feed_unavailable` | `ServiceUnavailable` | `true` | SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON (an HTML error page included). Retried — four attempts | Retry in 30–60 s; SWPC feeds occasionally lag during high-activity events |
+| all tools | `feed_moved` | `ServiceUnavailable` | `false` | SWPC feed path returns a permanent 4xx (404, 410, 401, 403, and the rest), or — on `get_conditions` — the scales feed no longer carries its `"0"` (today) period. One attempt | Retrying will not help; the feed path no longer resolves or no longer has the expected shape, and the feed URL needs updating against SWPC's current inventory |
+| `get_aurora_forecast` | `invalid_coordinates` | `ValidationError` | — | One coordinate supplied without the other | Provide both latitude and longitude together, or omit both for global metadata only |
 
-Baseline infrastructure errors (`InternalError`, `Timeout`, `SerializationError`) bubble freely from the service layer and do not need declaring.
+Coordinate and window *bounds* (`latitude` −90–90, `longitude` −180–180, `window_hours` 1–168, `window_days` 1–7) are Zod constraints, not contract entries: the handler never runs, so the framework rejects them as `InvalidParams` with its own `invalid_arguments` reason and a schema-derived hint. A bound enforced in both places would leave the contract entry unreachable — see `api-errors`.
+
+Baseline infrastructure errors (`InternalError`, `Timeout`, `SerializationError`, `RequestCancelled`) bubble freely from the service layer and do not need declaring. A caller abort stays `RequestCancelled` and carries no reason — it is not a feed failure.
 
 ---
 
@@ -111,6 +112,10 @@ Baseline infrastructure errors (`InternalError`, `Timeout`, `SerializationError`
 ## Design Decisions
 
 **Single service, no per-feed service split.** All six tools call one `SpaceWeatherService`. The feeds are from the same domain, share the same base URL, have identical resilience requirements, and a single `fetchWithTimeout`+`withRetry` utility covers them all. Per-feed services would add files without adding isolation value.
+
+**Feed failures are classified in `fetchFeed`, outside the `withRetry` boundary.** `fetchFeed` is the single funnel every feed call passes through and it already receives `ctx`, so `ctx.recoveryFor(reason)` resolves the calling tool's hint without the service knowing which tool called it. It enriches the rejected `McpError` — adding `reason`, the recovery hint, and `path` — rather than replacing it, so `status`, `statusText`, `retryAfter`, `retryAttempts`, and `available` all survive to the client. Two placements were rejected: wrapping in the handlers needs a `try/catch` in all six, which the project's core rule forbids, and `ctx.fail` builds a *new* error from `{...data, reason}`, dropping the upstream diagnostics unless every handler re-spreads them. Sitting outside the retry boundary is what keeps the attempt counts intact: both reasons map to `ServiceUnavailable`, which is in the framework's transient set, so rewriting the code inside the retry closure would turn a permanent 404 into four attempts against a feed SWPC no longer serves. The tradeoff accepted is that the conformance linter only scans handler source for `throw`, so a service-raised reason is not lint-enforced as reachable; one wire-shape test per reason per tool compensates.
+
+**`feed_moved` is a separate reason, not a message variant.** The recovery hint is resolved from the contract by `ctx.recoveryFor`, so one reason can carry exactly one hint — and the two hints point in opposite directions. A 503 clears on its own and "retry in 30–60 s" is right; a removed feed never clears without a code change, and the same hint would tell the agent to burn retries on something that can never succeed. Both map to `ServiceUnavailable` because the failure is upstream either way: these tools accept no upstream identifier, so no 4xx from these feeds can be caused by caller input, and an agent reading `NotFound` would conclude "the thing I asked for doesn't exist" when the truth is "this server is pointed at a feed SWPC no longer serves".
 
 **No resources.** Space weather data is real-time and feed-based — there are no stable resource URIs that would give agents more than the tools already provide. Resources fit addressable entities (a specific study, a specific report); these are live sensor feeds with no meaningful URI identity.
 
@@ -132,7 +137,7 @@ Baseline infrastructure errors (`InternalError`, `Timeout`, `SerializationError`
 
 **Bz is surfaced prominently in solar wind output.** Southward Bz (negative) is the primary driver of geomagnetic storm development. It belongs in the summary and format output as a first-class field, not buried in a metrics array.
 
-**NOAA scale text included alongside numeric values.** Raw Kp = 6 is opaque; "G2 moderate storm — aurora possible to ~45° geomagnetic latitude" is actionable. Both are returned so agents can reason with the number and format with the text.
+**NOAA scale text included alongside numeric values.** Raw Kp = 6 is opaque; "G2 moderate storm — aurora possible to ~55° geomagnetic latitude" is actionable. Both are returned so agents can reason with the number and format with the text.
 
 **Proton flux included in solar activity, not a separate tool.** The ≥10 MeV proton flux (S-scale) is part of the same radiation storm picture as X-ray flux and active regions. Splitting it into a separate tool would force agents to call both for a complete solar-activity answer.
 
@@ -168,14 +173,16 @@ The message code's prefix gives the product type — `WAR*` Warning, `WAT*` Watc
 
 ### NOAA Scale Reference
 
-| Scale | Index | Descriptor | Kp equiv | Aurora latitude |
+SWPC reports Kp in thirds and starts each G level at that level's "minus" value, so the band floors are thirds rather than whole numbers. Aurora latitudes are geomagnetic.
+
+| Scale | Index | Descriptor | Kp range | Aurora latitude |
 |:------|:------|:-----------|:---------|:----------------|
-| G0 | 0 | None | < 5 | — |
-| G1 | 1 | Minor | 5 | ≤ 60° |
-| G2 | 2 | Moderate | 6 | ≤ 55° |
-| G3 | 3 | Strong | 7 | ≤ 50° |
-| G4 | 4 | Severe | 8 | ≤ 45° |
-| G5 | 5 | Extreme | 9 | ≤ 40° |
+| G0 | 0 | None | < 4.67 | — |
+| G1 | 1 | Minor | 4.67 – 5.33 | ≤ 60° |
+| G2 | 2 | Moderate | 5.67 – 6.33 | ≤ 55° |
+| G3 | 3 | Strong | 6.67 – 7.33 | ≤ 50° |
+| G4 | 4 | Severe | 7.67 – 8.67 | ≤ 45° |
+| G5 | 5 | Extreme | 9.00 | ≤ 40° |
 | R1 | 1 | Minor | — | HF radio degraded |
 | R3 | 3 | Strong | — | HF blackout likely |
 | S1 | 1 | Minor | — | Minor radiation risk |
@@ -205,6 +212,14 @@ The message code's prefix gives the product type — `WAR*` Warning, `WAT*` Watc
 
 **Scale values can be `null`** in `noaa-scales.json` when a forecast is unavailable for that period — normalize nulls to `0` (no storm) or mark as `unknown` depending on the field context.
 
-**Alerts message text:** Raw CRLF-separated text. The service parses out the structured fields (product code, serial number, issue time, validity window, warning conditions) via regex on the structured lines, and preserves the full message for downstream use. The validity window is labeled differently per product type — `Valid From`/`Valid To` (Warnings/Watches), `Now Valid Until` (extended Warnings), and `Begin Time`/`End Time` (Alerts/Summaries) — and is normalized to ISO 8601 UTC; products carrying no time line keep `null`.
+**Alerts message text:** Raw CRLF-separated text. The service parses out the structured fields (product code, serial number, issue time, validity window, warning conditions) via regex on the structured lines, and preserves the full message for downstream use. `serialNumber` is line-anchored on the record's own `Serial Number:` field — a cancellation, extension, or continuation also carries a `<prefix> Serial Number:` line naming a *different* record — and is exposed on the output because serials are what make those chains navigable. It is a per-message-code counter, not a global identifier: it repeats across codes and within one code on a corrected reissue, so it is only meaningful alongside `messageCode`.
 
-**Alert cancellations:** SWPC cancels a product by issuing a new record under the same message code with a `CANCEL WARNING:`/`CANCEL ALERT:` headline. A cancellation keeps the cancelled product's own type and carries no validity window, so neither the product-type nor the elapsed-`validTo` check excludes it — the service flags it as `cancelled` and `get_alerts` drops it from `active_only=true`. Detection is per record, never cached per code: a single code cycles CONTINUED → CANCEL → CONTINUED within minutes. `EXTENDED WARNING:` and `CONTINUED` headlines mean the product is still in force and are deliberately not cancellations. The explanation line varies (`Conditions no longer justify...`, `Should have only been valid until...`, `Incorrect maximum value...`), so the headline is the only reliable marker.
+**Validity windows:** Labeled differently per product type — `Valid From`/`Valid To` (Warnings), `Now Valid Until` (extended Warnings), and `Begin Time`/`End Time` (Alerts/Summaries) — and normalized to ISO 8601 UTC. No `WAT*` product carries a label at all: a Watch states its coverage as a `Highest Storm Level Predicted by Day:` list, so its `validTo` is derived from the end of the last listed UTC day whose level is not `None`. A trailing `None` day forecasts quiet rather than extending coverage, so taking the last *listed* day would over-extend by 24 h on most live Watches. The list omits the year; it comes from the record's issue time, rolled forward for a January day listed by a December Watch. A cancellation's `Cancelled Level Predicted:` list uses a different header and different spacing (`Sep 08  :`) and must never parse as a validity end. Products with neither a label nor a storm day keep `null`, which the in-force filter reads as "nothing says this has finished" rather than "expired".
+
+**Alert cancellations:** SWPC cancels a product by issuing a new record under the same message code with a `CANCEL WARNING:`/`CANCEL WATCH:`/`CANCEL ALERT:` headline. A cancellation keeps the cancelled product's own type and carries no validity window, so neither the product-type nor the elapsed-`validTo` check excludes it — the service flags it as `cancelled` and `get_alerts` drops it from `active_only=true`. Detection is per record, never cached per code: a single code cycles CONTINUED → CANCEL → CONTINUED within minutes. `EXTENDED WARNING:` and `CONTINUED` headlines mean the product is still in force and are deliberately not cancellations. The explanation line varies (`Conditions no longer justify...`, `Should have only been valid until...`, `Incorrect maximum value...`), so the headline is the only reliable marker.
+
+Flagging the cancellation is only half the job: the product it cancels is a separate record that carries `cancelled: false` and often a `validTo` still in the future, so it would otherwise stay in the active set. The service parses the cancellation's `Cancel Serial Number:` into `cancelsSerialNumber` and its `Original Issue Time:` into `cancelsOriginalIssueDatetime`, and `get_alerts` resolves each cancellation to exactly one target: same `messageCode`, matching `serialNumber`, issued earlier, with the original issue time picking between reissues that share a serial. One target per cancellation is what keeps a cancellation from clearing its whole message code, and the `Extension to`/`Continuation of` links never populate the cancel field.
+
+**Watch supersession:** Every in-force Watch body carries `THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT`. `get_alerts` keeps only the newest record carrying that line and drops the rest under `active_only=true`. The rule keys on the line, not on the product code: the text says any and all, and the live Watches are sequential revisions of one three-day forecast issued under whichever `WATA*` code matches the level they predict, so per-code scoping returns two conflicting outlooks for the same day. A cancellation does not carry the line and is not a superseding record — it removes its target through the serial link instead.
+
+**Filter disclosure:** `active_only=true` can remove dozens of records, so the result would otherwise read as "quiet" when it means "everything was filtered". The tool echoes the applied window (`appliedWindowHours`, `appliedCutoff`) and per-reason exclusion counts (`exclusions`) as enrichment fields, which reach `structuredContent` and the `content[]` trailer without a `format()` entry. Reasons overlap, so each excluded record is attributed to the first that fires — aged out, product type, cancellation record, cancelled by serial, superseded, elapsed validity — and the counts plus `totalCount` equal the number of records the feed carried. That order puts the reasons naming a replacement ahead of the generic elapsed-validity one on purpose: a superseded Watch has normally outlived its own forecast days too, so the reverse order would report the whole Watch chain as merely stale and never say a newer forecast replaced it. Under `active_only=false` nothing is filtered by reason, so neither the echo nor the counts are emitted.

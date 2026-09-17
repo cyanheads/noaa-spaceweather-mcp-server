@@ -8,9 +8,17 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuroraForecastData } from '@/services/space-weather/types.js';
 
-vi.mock('@/services/space-weather/space-weather-service.js', () => ({
-  getSpaceWeatherService: vi.fn(),
-}));
+// Partial mock: stub the service accessor but keep the real aurora band table, which
+// the tool reads for every Kp/G threshold these tests assert (#28). Stubbing it would
+// test the stub, not the shared table.
+vi.mock('@/services/space-weather/space-weather-service.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/services/space-weather/space-weather-service.js')>();
+  return {
+    ...actual,
+    getSpaceWeatherService: vi.fn(),
+  };
+});
 
 import { getAuroraForecast } from '@/mcp-server/tools/definitions/get-aurora-forecast.tool.js';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
@@ -168,11 +176,13 @@ describe('getAuroraForecast', () => {
       localLookup: {
         requestedLatitude: 47.6,
         requestedLongitude: -122.3,
+        geomagneticLatitude: 53.03,
         gridLatitude: 47,
         gridLongitude: -122,
         auroraPercent: 3,
-        minKpRequired: 6,
-        verdict: 'Very low aurora probability (3%) at this location. Kp≥6 needed.',
+        minKpRequired: 6.67,
+        minGScale: 3,
+        verdict: 'Very low aurora probability (3%) at this location. Kp≥6.67 needed.',
       },
       gridPointCount: 4,
       topAuroraPercent: 85,
@@ -187,5 +197,176 @@ describe('getAuroraForecast', () => {
     expect(text).toContain('47.6°');
     expect(text).toContain('3%');
     expect(text).toContain('Very low aurora probability');
+    // Every declared localLookup field reaches content[], not just structuredContent.
+    expect(text).toContain('53.03');
+    expect(text).toContain('6.67');
+    expect(text).toContain('G3');
+  });
+
+  it('renders the unreachable band in format() without naming a G level', () => {
+    const blocks = getAuroraForecast.format!({
+      observationTime: '2026-06-08T09:00:00Z',
+      forecastTime: '2026-06-08T09:30:00Z',
+      localLookup: {
+        requestedLatitude: 0,
+        requestedLongitude: 0,
+        geomagneticLatitude: 2.71,
+        gridLatitude: 0,
+        gridLongitude: 0,
+        auroraPercent: 8,
+        minKpRequired: 9,
+        minGScale: null,
+        verdict: 'Aurora not visible at 2.7° geomagnetic latitude.',
+      },
+      gridPointCount: 2,
+      topAuroraPercent: 8,
+      topAuroraRegion: '0°N, 0°E',
+    });
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('2.71');
+    expect(text).toMatch(/not reachable|unreachable|—/);
+  });
+});
+
+/**
+ * Geomagnetic latitudes are the centered-dipole conversion against the IGRF-14
+ * pole for epoch 2025.0 (80.789°N, 72.763°W), the same figures the issue derived
+ * from the degree-1 Gauss coefficients.
+ */
+describe('getAuroraForecast geomagnetic latitude (#28)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  /** A grid whose single point sits exactly on the requested coordinate. */
+  function gridAt(lat: number, lon: number, auroraPercent: number): AuroraForecastData {
+    return {
+      meta: { observationTime: '2026-09-17T15:23:00Z', forecastTime: '2026-09-17T15:53:00Z' },
+      grid: [{ latitude: Math.round(lat), longitude: Math.round(lon), auroraPercent }],
+    };
+  }
+
+  async function lookup(lat: number, lon: number, auroraPercent = 1) {
+    const svc = { getAuroraForecast: vi.fn().mockResolvedValue(gridAt(lat, lon, auroraPercent)) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+    const ctx = createMockContext({ errors: getAuroraForecast.errors });
+    const input = getAuroraForecast.input.parse({ latitude: lat, longitude: lon });
+    const result = await getAuroraForecast.handler(input, ctx);
+    return result.localLookup!;
+  }
+
+  const CONVERSION_CASES: [
+    name: string,
+    lat: number,
+    lon: number,
+    geomagnetic: number,
+    minKp: number,
+    minGScale: number | null,
+  ][] = [
+    ['Denver', 39.74, -104.99, 47.32, 7.67, 4],
+    ['San Francisco', 37.77, -122.42, 43.35, 9.0, 5],
+    ['Seattle', 47.61, -122.33, 53.03, 6.67, 3],
+    ['Hobart', -42.88, 147.33, -49.59, 7.67, 4],
+    ['Moscow', 55.75, 37.62, 51.7, 6.67, 3],
+  ];
+
+  it.each(CONVERSION_CASES)(
+    'converts %s to geomagnetic latitude and reports the matching band floor',
+    async (_name, lat, lon, geomagnetic, minKp, minGScale) => {
+      const l = await lookup(lat, lon);
+
+      expect(l.geomagneticLatitude).toBeCloseTo(geomagnetic, 1);
+      expect(l.minKpRequired).toBe(minKp);
+      expect(l.minGScale).toBe(minGScale);
+    },
+  );
+
+  it('no longer tells Denver and San Francisco that aurora is impossible', async () => {
+    for (const [lat, lon] of [
+      [39.74, -104.99],
+      [37.77, -122.42],
+    ]) {
+      const l = await lookup(lat!, lon!);
+      expect(l.verdict).not.toMatch(/not visible/i);
+    }
+  });
+
+  it('raises the threshold where geomagnetic latitude is lower than geographic (Moscow)', async () => {
+    // Moscow's geomagnetic latitude is ~4° below its geographic one, so reading the
+    // geographic value under-stated the Kp needed.
+    const l = await lookup(55.75, 37.62);
+    expect(l.geomagneticLatitude).toBeLessThan(55.75);
+    expect(l.minKpRequired).toBeGreaterThan(4);
+  });
+
+  it('reports the unreachable band below 40° geomagnetic', async () => {
+    const l = await lookup(0, 0);
+    expect(Math.abs(l.geomagneticLatitude)).toBeLessThan(40);
+    expect(l.minGScale).toBeNull();
+    expect(l.minKpRequired).toBe(9);
+  });
+
+  it('yields the "not visible" verdict to a grid point reading 10% or more', async () => {
+    // Below 40° geomagnetic the verdict is normally "not visible"; a real oval
+    // reading (≥10%) is signal rather than the 8% artifact #9 pinned.
+    const artifact = await lookup(0, 0, 8);
+    const real = await lookup(0, 0, 10);
+
+    expect(artifact.verdict).toMatch(/not visible/i);
+    expect(real.verdict).not.toMatch(/not visible/i);
+    expect(real.verdict).toContain('10%');
+  });
+});
+
+describe('getAuroraForecast antimeridian wrap (#28)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  /**
+   * The normalized OVATION grid runs −179..180, so there is a +180 column and no
+   * −180 one. A raw longitude difference lands a request just west of the
+   * antimeridian on the wrong cell.
+   */
+  const wrapGrid: AuroraForecastData = {
+    meta: { observationTime: '2026-09-17T15:23:00Z', forecastTime: '2026-09-17T15:53:00Z' },
+    grid: [
+      { longitude: 180, latitude: 51, auroraPercent: 42 }, // 0.2° away
+      { longitude: -179, latitude: 51, auroraPercent: 7 }, // 0.8° away
+    ],
+  };
+
+  it('picks the nearest cell across the antimeridian for a request at −179.8°', async () => {
+    const svc = { getAuroraForecast: vi.fn().mockResolvedValue(wrapGrid) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAuroraForecast.errors });
+    const input = getAuroraForecast.input.parse({ latitude: 51, longitude: -179.8 });
+    const result = await getAuroraForecast.handler(input, ctx);
+
+    expect(result.localLookup!.gridLongitude).toBe(180);
+    expect(result.localLookup!.auroraPercent).toBe(42);
+  });
+
+  it('picks the nearest cell across the antimeridian for a request at +179.8°', async () => {
+    const svc = { getAuroraForecast: vi.fn().mockResolvedValue(wrapGrid) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAuroraForecast.errors });
+    const input = getAuroraForecast.input.parse({ latitude: 51, longitude: 179.8 });
+    const result = await getAuroraForecast.handler(input, ctx);
+
+    expect(result.localLookup!.gridLongitude).toBe(180);
+  });
+
+  it('maps an exact +180° request onto the grid’s 180 column', async () => {
+    const svc = { getAuroraForecast: vi.fn().mockResolvedValue(wrapGrid) };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getAuroraForecast.errors });
+    const input = getAuroraForecast.input.parse({ latitude: 51, longitude: 180 });
+    const result = await getAuroraForecast.handler(input, ctx);
+
+    expect(result.localLookup!.gridLongitude).toBe(180);
   });
 });

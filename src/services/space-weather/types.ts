@@ -156,9 +156,17 @@ export interface XrayFlux {
   timeTag: string;
 }
 
-/** Active solar region (NOAA active region). */
+/**
+ * Active solar region (NOAA active region).
+ *
+ * The four probability fields cover the UTC day *after* {@link SolarRegion.observedDate},
+ * not that date: SWPC heads the block "Region Flare Probabilities for <day+1>" over a
+ * `:Reg_Prob: <day>` table, and the JSON feed's `observed_date` is the `:Reg_Prob:`
+ * date. Read alongside `observedDate` in the same record, they otherwise look like
+ * same-day figures.
+ */
 export interface SolarRegion {
-  /** C-class flare probability (%). */
+  /** C-class flare probability (%), for the UTC day after `observedDate`. */
   cFlareProbability: number;
   /** Heliographic latitude, e.g. "N17". */
   latitude: string;
@@ -166,19 +174,19 @@ export interface SolarRegion {
   location: string;
   /** Magnetic class. */
   magClass: string;
-  /** M-class flare probability (%). */
+  /** M-class flare probability (%), for the UTC day after `observedDate`. */
   mFlareProbability: number;
   /** Number of sunspots. */
   numberSpots: number;
-  /** Observation date. */
+  /** UTC observation date; the probability fields cover the following day. */
   observedDate: string;
-  /** Proton event probability (%). */
+  /** Proton event probability (%), for the UTC day after `observedDate`. */
   protonProbability: number;
   /** NOAA active region number. */
   region: number;
   /** Spot classification. */
   spotClass: string;
-  /** X-class flare probability (%). */
+  /** X-class flare probability (%), for the UTC day after `observedDate`. */
   xFlareProbability: number;
 }
 
@@ -226,13 +234,29 @@ export interface ProtonFlux {
 /** Parsed SWPC alert/watch/warning. */
 export interface SpaceWeatherAlert {
   /**
-   * True when this record is a cancellation notice ("CANCEL WARNING:"/"CANCEL ALERT:"
-   * headline) rather than a product in force. SWPC cancels by issuing a new record
-   * under the same message code, so this is per-record: the same code cycles between
-   * in-force and cancelled. "EXTENDED"/"CONTINUED" records are still in force and are
-   * not cancellations.
+   * True when this record is a cancellation notice ("CANCEL WARNING:" / "CANCEL WATCH:" /
+   * "CANCEL ALERT:" headline) rather than a product in force. SWPC cancels by issuing a
+   * new record under the same message code, so this is per-record: the same code cycles
+   * between in-force and cancelled. "EXTENDED"/"CONTINUED" records are still in force and
+   * are not cancellations.
    */
   cancelled: boolean;
+  /**
+   * The issue time a cancellation restates for its target ("Original Issue Time:"), as
+   * ISO 8601 UTC; null on every other record. SWPC reuses a serial within a message
+   * code on a corrected reissue, so this is what disambiguates which record
+   * {@link SpaceWeatherAlert.cancelsSerialNumber} names.
+   */
+  cancelsOriginalIssueDatetime: string | null;
+  /**
+   * The serial this record cancels ("Cancel Serial Number:"); null when it cancels
+   * nothing. Resolves against {@link SpaceWeatherAlert.serialNumber} under this
+   * record's own {@link SpaceWeatherAlert.messageCode} — serials are per-code counters,
+   * not global identifiers. The "Extension to Serial Number:" and "Continuation of
+   * Serial Number:" links mean the referenced product is still in force and never
+   * populate this.
+   */
+  cancelsSerialNumber: string | null;
   /** ISO 8601 issue datetime. */
   issueDatetime: string;
   /**
@@ -263,8 +287,30 @@ export interface SpaceWeatherAlert {
   productId: string;
   /** Product type derived from the code prefix. */
   productType: 'Warning' | 'Watch' | 'Alert' | 'Summary' | 'Other';
+  /**
+   * The record's own "Serial Number:" value; null when the body carries no such line.
+   * A per-message-code counter, not a globally unique ID — it repeats across codes and
+   * within one code on a corrected reissue. It is the key the "Cancel Serial Number:",
+   * "Extension to Serial Number:", and "Continuation of Serial Number:" links point at.
+   */
+  serialNumber: string | null;
+  /**
+   * True when the body carries the "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT"
+   * line — a claim over every earlier record carrying it, not just others under the same
+   * message code. A cancellation does not carry the line; it removes its named target
+   * through {@link SpaceWeatherAlert.cancelsSerialNumber} instead.
+   */
+  supersedes: boolean;
   /** Validity-window start as ISO 8601 UTC ("Valid From"/"Begin Time" line), null if absent. */
   validFrom: string | null;
-  /** Validity-window end as ISO 8601 UTC ("Valid To"/"Now Valid Until"/"End Time" line), null if absent. */
+  /**
+   * Validity-window end as ISO 8601 UTC, null when nothing in the body states one.
+   * Read from a "Valid To" / "Now Valid Until" / "End Time" label when the product
+   * carries one. A Watch carries none, so its end is derived from the "Highest Storm
+   * Level Predicted by Day:" list instead: the end of the last listed UTC day whose
+   * level is not "None" (a trailing None day forecasts quiet rather than extending
+   * coverage), with the year taken from `issueDatetime`. A cancellation's "Cancelled
+   * Level Predicted:" list is a different header and yields nothing.
+   */
   validTo: string | null;
 }

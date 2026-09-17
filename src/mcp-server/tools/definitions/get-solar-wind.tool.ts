@@ -142,9 +142,17 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     {
       reason: 'feed_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SWPC endpoint returns non-OK status or times out after retries.',
+      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried before failing.',
       retryable: true,
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
+    },
+    {
+      reason: 'feed_moved',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'SWPC feed path returns a permanent 4xx (404, 410, 401, 403). Fails in one attempt.',
+      retryable: false,
+      recovery:
+        'Retrying will not help — the SWPC feed path no longer resolves or no longer has the expected shape; the feed URL needs updating against SWPC current inventory.',
     },
   ],
 

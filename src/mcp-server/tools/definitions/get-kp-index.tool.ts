@@ -14,9 +14,15 @@ const KpObsSchema = z
   .object({
     timeTag: z.string().describe('ISO 8601 3-hour interval time tag.'),
     kp: z.number().describe('Kp index value 0–9.'),
-    gScale: z.number().describe('NOAA G-scale equivalent (0–5).'),
+    gScale: z
+      .number()
+      .describe(
+        'NOAA G-scale equivalent (0–5). Each level starts at its "minus" third — G1 at Kp 4.67, G2 at 5.67, G3 at 6.67, G4 at 7.67 (through 8.67), G5 at 9.',
+      ),
     gLabel: z.string().describe('NOAA G-scale label, e.g. "G0", "G3".'),
-    auroraLatitude: z.string().describe('Aurora visibility guidance for this Kp level.'),
+    auroraLatitude: z
+      .string()
+      .describe('Aurora visibility guidance for this Kp level, in geomagnetic latitude.'),
   })
   .describe('One observed Kp 3-hour interval reading.');
 
@@ -31,7 +37,11 @@ const KpForecastSchema = z
       .string()
       .nullable()
       .describe('NOAA scale string, e.g. "G1", null when not available.'),
-    gScale: z.number().describe('NOAA G-scale equivalent (0–5) derived from Kp.'),
+    gScale: z
+      .number()
+      .describe(
+        'NOAA G-scale equivalent (0–5) derived from Kp, on the same minus-third band floors SWPC uses — it agrees with noaaScale when the feed states one.',
+      ),
     gLabel: z.string().describe('NOAA G-scale label, e.g. "G0", "G3".'),
   })
   .describe('One forward-looking Kp forecast interval (estimated or predicted).');
@@ -41,8 +51,10 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
   description:
     'Planetary K-index (0–9 geomagnetic activity scale) — recent observed 3-hour values with their ' +
     'NOAA G-scale equivalents and aurora-latitude guidance, plus the 3-day Kp forecast series. ' +
-    'Kp is the primary driver of aurora visibility and geomagnetic storm severity: Kp≥5 is G1, Kp≥7 ' +
-    'is G3 (aurora to ~50°), Kp≥9 is G5 extreme. Use noaa_spaceweather_get_conditions for a ' +
+    'Kp is the primary driver of aurora visibility and geomagnetic storm severity. SWPC reports Kp ' +
+    'in thirds and starts each G level at that level’s "minus" value: Kp 4.67 (5−) is G1, Kp 6.67 ' +
+    '(7−) is G3 (aurora to ~50° geomagnetic), Kp 8.67 (9−) is still G4, and only Kp 9 is G5 extreme. ' +
+    'Use noaa_spaceweather_get_conditions for a ' +
     'combined snapshot including storm scales; use this tool when you need the Kp time series or ' +
     'forecast detail.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
@@ -78,9 +90,17 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
     {
       reason: 'feed_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SWPC endpoint returns non-OK status or times out after retries.',
+      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried before failing.',
       retryable: true,
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
+    },
+    {
+      reason: 'feed_moved',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'SWPC feed path returns a permanent 4xx (404, 410, 401, 403). Fails in one attempt.',
+      retryable: false,
+      recovery:
+        'Retrying will not help — the SWPC feed path no longer resolves or no longer has the expected shape; the feed URL needs updating against SWPC current inventory.',
     },
   ],
 

@@ -5,7 +5,7 @@
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the framework fetch utility so tests run without a live SWPC endpoint.
 vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
@@ -14,7 +14,7 @@ vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
 }));
 
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
-import { SpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
+import { kpToGScale, SpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
 
 const mockFetch = vi.mocked(fetchWithTimeout);
 
@@ -27,6 +27,17 @@ function makeService(version = '0.0.0-test'): SpaceWeatherService {
 function makeResponse(body: unknown): Response {
   return {
     text: () => Promise.resolve(JSON.stringify(body)),
+  } as unknown as Response;
+}
+
+/**
+ * Response carrying a body verbatim. `makeResponse` serializes through
+ * `JSON.stringify`, which emits `null` for every non-finite number, so it cannot
+ * express the bare `NaN` / `Infinity` tokens SWPC occasionally sends (#25).
+ */
+function makeRawResponse(body: string): Response {
+  return {
+    text: () => Promise.resolve(body),
   } as unknown as Response;
 }
 
@@ -131,6 +142,22 @@ describe('SpaceWeatherService.getAlerts', () => {
         message:
           'Space Weather Message Code: ALTTP2\r\nSerial Number: 1505\r\nIssue Time: 2026 Jun 20 0406 UTC\r\n\r\nCANCEL ALERT: Type II Radio Emission\r\nCancel Serial Number: 1504\r\nOriginal Issue Time: 2026 Jun 20 0403 UTC\r\n',
       },
+      {
+        // Watch — no validity label at all; the end comes from the predicted-day list,
+        // whose last non-None day is Sep 17, so the Watch runs to the end of that day.
+        product_id: 'A20F',
+        issue_datetime: '2026-09-15 17:37:51.220',
+        message:
+          'Space Weather Message Code: WATA20\r\nSerial Number: 1125\r\nIssue Time: 2026 Sep 15 1737 UTC\r\n\r\nWATCH: Geomagnetic Storm Category G1 Predicted \nHighest Storm Level Predicted by Day:\nSep 16:  G1 (Minor)   Sep 17:  G1 (Minor)   Sep 18:  None (Below G1)   \nTHIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT\nComment: \n',
+      },
+      {
+        // Watch cancellation — "Cancelled Level Predicted:" is a different header with
+        // whitespace before each day's colon. It must never be read as a validity end.
+        product_id: 'A30F',
+        issue_datetime: '2026-09-09 21:01:32.307',
+        message:
+          'Space Weather Message Code: WATA30\r\nSerial Number: 282\r\nIssue Time: 2026 Sep 09 2101 UTC\r\n\r\nCANCEL WATCH: Geomagnetic Storm Category G2 Predicted \nCancel Serial Number: 281\nOriginal Issue Time: 2026 Sep 08 1702 UTC\nCancelled Level Predicted:\nSep 08  : None (Bellow G1)  Sep 09  : None (Bellow G1)  Sep 10  : None (Bellow G1)  \nConditions no longer warrant watch criteria.\n',
+      },
     ];
     mockFetch.mockResolvedValue(makeResponse(rawAlerts));
 
@@ -153,6 +180,153 @@ describe('SpaceWeatherService.getAlerts', () => {
     // Cancellation — no validity lines; "Original Issue Time" is not a start.
     expect(alerts[3]!.validFrom).toBeNull();
     expect(alerts[3]!.validTo).toBeNull();
+
+    // Watch — no validity label, so the end is derived from the predicted-day list:
+    // the end of the last day forecasting a storm, not of the trailing None day.
+    expect(alerts[4]!.validFrom).toBeNull();
+    expect(alerts[4]!.validTo).toBe('2026-09-18T00:00:00Z');
+
+    // Watch cancellation — "Cancelled Level Predicted:" yields no end.
+    expect(alerts[5]!.validFrom).toBeNull();
+    expect(alerts[5]!.validTo).toBeNull();
+  });
+
+  /**
+   * A Watch states its coverage only as a per-day storm outlook, so the end instant
+   * is derived rather than read off a label. Bodies are live-shaped: one header line
+   * followed by one line of "<Mon> <DD>:  <Level> (<Descriptor>)" entries.
+   */
+  const DAY_LIST_CASES: {
+    name: string;
+    issueDatetime: string;
+    issueTime: string;
+    days: string;
+    validTo: string | null;
+  }[] = [
+    {
+      name: 'trailing None day is a forecast of quiet, not coverage',
+      issueDatetime: '2026-09-15 17:37:51.220',
+      issueTime: '2026 Sep 15 1737 UTC',
+      days: 'Sep 16:  G1 (Minor)   Sep 17:  G1 (Minor)   Sep 18:  None (Below G1)   ',
+      validTo: '2026-09-18T00:00:00Z',
+    },
+    {
+      name: 'day list ending on a storm day runs to the end of that day',
+      issueDatetime: '2026-09-15 17:37:51.220',
+      issueTime: '2026 Sep 15 1737 UTC',
+      days: 'Sep 16:  G1 (Minor)   Sep 17:  G1 (Minor)   Sep 18:  G2 (Moderate)   ',
+      validTo: '2026-09-19T00:00:00Z',
+    },
+    {
+      name: 'leading None days do not shorten the window',
+      issueDatetime: '2026-07-10 19:46:00.000',
+      issueTime: '2026 Jul 10 1946 UTC',
+      days: 'Jul 11:  None (Below G1)   Jul 12:  G1 (Minor)   Jul 13:  None (Below G1)   ',
+      validTo: '2026-07-13T00:00:00Z',
+    },
+    {
+      name: 'an all-None list forecasts no storm at all',
+      issueDatetime: '2026-07-10 19:46:00.000',
+      issueTime: '2026 Jul 10 1946 UTC',
+      days: 'Jul 11:  None (Below G1)   Jul 12:  None (Below G1)   Jul 13:  None (Below G1)   ',
+      validTo: null,
+    },
+    {
+      name: 'a December Watch listing January days rolls the year forward',
+      issueDatetime: '2026-12-30 18:12:00.000',
+      issueTime: '2026 Dec 30 1812 UTC',
+      days: 'Dec 31:  G1 (Minor)   Jan 01:  G2 (Moderate)   Jan 02:  None (Below G1)   ',
+      validTo: '2027-01-02T00:00:00Z',
+    },
+    {
+      name: 'a year rollover with the storm day left in December stays in that year',
+      issueDatetime: '2026-12-30 18:12:00.000',
+      issueTime: '2026 Dec 30 1812 UTC',
+      days: 'Dec 31:  G1 (Minor)   Jan 01:  None (Below G1)   Jan 02:  None (Below G1)   ',
+      validTo: '2027-01-01T00:00:00Z',
+    },
+  ];
+
+  it('derives a Watch validity end from the last non-None predicted day', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse(
+        DAY_LIST_CASES.map((c, i) => ({
+          product_id: 'A20F',
+          issue_datetime: c.issueDatetime,
+          message: `Space Weather Message Code: WATA20\r\nSerial Number: ${1100 + i}\r\nIssue Time: ${c.issueTime}\r\n\r\nWATCH: Geomagnetic Storm Category G1 Predicted \nHighest Storm Level Predicted by Day:\n${c.days}\nTHIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT\nComment: \n`,
+        })),
+      ),
+    );
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    expect(alerts.map((a) => a.validTo)).toEqual(DAY_LIST_CASES.map((c) => c.validTo));
+  });
+
+  it('never lets a derived day-list end override a stated validity label', async () => {
+    // A Watch carrying both a label and a day list must keep the label: SWPC states
+    // the window directly when it has one, and the derivation is the fallback.
+    const rawAlerts = [
+      {
+        product_id: 'A50F',
+        issue_datetime: '2026-06-03 14:52:00.000',
+        message:
+          'Space Weather Message Code: WATA50\r\nSerial Number: 98\r\nIssue Time: 2026 Jun 03 1452 UTC\r\n\r\nWATCH: Geomagnetic Storm Category G3 Predicted\nValid From: 2026 Jun 03 1452 UTC\nValid To: 2026 Jun 07 0000 UTC\nHighest Storm Level Predicted by Day:\nJun 03:  G3 (Strong)   Jun 04:  G1 (Minor)   Jun 05:  None (Below G1)   \n',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(rawAlerts));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    expect(alerts[0]!.validTo).toBe('2026-06-07T00:00:00Z');
+  });
+
+  it('parses the record own serial number, never a referenced one', async () => {
+    const rawAlerts = [
+      {
+        // Plain record — its own serial and nothing else.
+        product_id: 'K05W',
+        issue_datetime: '2026-07-12 14:11:00.000',
+        message:
+          'Space Weather Message Code: WARK05\r\nSerial Number: 2249\r\nIssue Time: 2026 Jul 12 1411 UTC\r\n\r\nWARNING: Geomagnetic K-index of 5 expected \nValid From: 2026 Jul 12 1410 UTC\nValid To: 2026 Jul 13 2100 UTC\n',
+      },
+      {
+        // Cancellation — "Cancel Serial Number" names its target, not itself.
+        product_id: 'K05W',
+        issue_datetime: '2026-07-12 21:01:57.203',
+        message:
+          'Space Weather Message Code: WARK05\r\nSerial Number: 2250\r\nIssue Time: 2026 Jul 12 2101 UTC\r\n\r\nCANCEL WARNING: Geomagnetic K-index of 5 expected \nCancel Serial Number: 2249\nOriginal Issue Time: 2026 Jul 12 1411 UTC\n',
+      },
+      {
+        // Continuation — "Continuation of Serial Number" is a link, not this serial.
+        product_id: 'EF3A',
+        issue_datetime: '2026-07-07 05:07:12.617',
+        message:
+          'Space Weather Message Code: ALTEF3\r\nSerial Number: 3711\r\nIssue Time: 2026 Jul 07 0507 UTC\r\n\r\nCONTINUED ALERT: Electron 2MeV Integral Flux exceeded 1000pfu\nContinuation of Serial Number: 3710\n',
+      },
+      {
+        // Extension — same, under the other link label.
+        product_id: 'K04W',
+        issue_datetime: '2026-07-15 08:53:00.000',
+        message:
+          'Space Weather Message Code: WARK04\r\nSerial Number: 5387\r\nIssue Time: 2026 Jul 15 0853 UTC\r\n\r\nEXTENDED WARNING: Geomagnetic K-index of 4 expected\nExtension to Serial Number: 5386\nNow Valid Until: 2026 Jul 15 1500 UTC\n',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(rawAlerts));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    expect(alerts.map((a) => a.serialNumber)).toEqual(['2249', '2250', '3711', '5387']);
+    // Only the cancellation links a cancelled serial; a continuation or extension link
+    // means the product is still in force and must never read as one.
+    expect(alerts.map((a) => a.cancelsSerialNumber)).toEqual([null, '2249', null, null]);
+    expect(alerts[1]!.cancelsOriginalIssueDatetime).toBe('2026-07-12T14:11:00Z');
   });
 
   it('falls back to product_id parsing when message has no message-code line', async () => {
@@ -173,6 +347,9 @@ describe('SpaceWeatherService.getAlerts', () => {
     expect(alerts[0]!.productType).toBe('Other');
     // messageCode falls back to the short feed ID when no message-code line exists (#14)
     expect(alerts[0]!.messageCode).toBe('OTHER');
+    // A body carrying no "Serial Number:" line has no serial to expose — the feed
+    // offers no substitute, so it stays null rather than borrowing the product ID.
+    expect(alerts[0]!.serialNumber).toBeNull();
   });
 
   /**
@@ -464,6 +641,42 @@ describe('SpaceWeatherService.getAlerts', () => {
       true,
       false,
     ]);
+    // Only the two cancellations link a cancelled serial. The CONTINUED and EXTENDED
+    // records carry "Continuation of"/"Extension to" links, which mean the opposite.
+    expect(alerts.map((a) => a.cancelsSerialNumber)).toEqual([null, '3709', null, '2249', null]);
+  });
+
+  it('marks the supersede line only on the records that carry it', async () => {
+    // Every in-force Watch carries the line; the cancellation that removes one does
+    // not, and no non-Watch product does. Keying supersede on the message code
+    // instead of the line would sweep in the cancellation and the Warning below.
+    const rawAlerts = [
+      {
+        product_id: 'A20F',
+        issue_datetime: '2026-09-15 17:37:51.220',
+        message:
+          'Space Weather Message Code: WATA20\r\nSerial Number: 1125\r\nIssue Time: 2026 Sep 15 1737 UTC\r\n\r\nWATCH: Geomagnetic Storm Category G1 Predicted \nHighest Storm Level Predicted by Day:\nSep 16:  G1 (Minor)   Sep 17:  G1 (Minor)   Sep 18:  None (Below G1)   \nTHIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT\n',
+      },
+      {
+        product_id: 'A30F',
+        issue_datetime: '2026-09-09 21:01:32.307',
+        message:
+          'Space Weather Message Code: WATA30\r\nSerial Number: 282\r\nIssue Time: 2026 Sep 09 2101 UTC\r\n\r\nCANCEL WATCH: Geomagnetic Storm Category G2 Predicted \nCancel Serial Number: 281\nOriginal Issue Time: 2026 Sep 08 1702 UTC\nCancelled Level Predicted:\nSep 08  : None (Bellow G1)  Sep 09  : None (Bellow G1)  Sep 10  : None (Bellow G1)  \n',
+      },
+      {
+        product_id: 'K05W',
+        issue_datetime: '2026-09-12 14:11:00.000',
+        message:
+          'Space Weather Message Code: WARK05\r\nSerial Number: 5405\r\nIssue Time: 2026 Sep 12 1411 UTC\r\n\r\nWARNING: Geomagnetic K-index of 5 expected \nValid To: 2026 Sep 13 2100 UTC\n',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(rawAlerts));
+
+    const svc = makeService();
+    const ctx = createMockContext();
+    const alerts = await svc.getAlerts(ctx as never);
+
+    expect(alerts.map((a) => a.supersedes)).toEqual([true, false, false]);
   });
 
   it('normalizes a space-separated issue datetime without fractional seconds to explicit UTC (#13)', async () => {
@@ -870,5 +1083,231 @@ describe('SpaceWeatherService.getSolarProbabilities (#16)', () => {
     expect(new Date(probs[2]!.date).getTime() - new Date(probs[1]!.date).getTime()).toBe(
       86_400_000,
     );
+  });
+});
+
+describe('SpaceWeatherService.getSolarProbabilities DST safety (#22)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** Minimal feed row — only `date` and the day-one columns matter to these cases. */
+  function makeProbsFeed(date: string) {
+    return [
+      {
+        date,
+        c_class_1_day: 10,
+        c_class_2_day: 20,
+        c_class_3_day: 30,
+        m_class_1_day: 1,
+        m_class_2_day: 2,
+        m_class_3_day: 3,
+        x_class_1_day: 1,
+        x_class_2_day: 1,
+        x_class_3_day: 1,
+        '10mev_protons_1_day': 1,
+        '10mev_protons_2_day': 1,
+        '10mev_protons_3_day': 1,
+      },
+    ];
+  }
+
+  async function datesFor(tz: string, feedDate: string): Promise<string[]> {
+    vi.stubEnv('TZ', tz);
+    mockFetch.mockResolvedValue(makeResponse(makeProbsFeed(feedDate)));
+    const probs = await makeService().getSolarProbabilities(createMockContext() as never);
+    return probs.map((p) => p.date);
+  }
+
+  it('emits three midnight-UTC days across a spring-forward transition in a DST-observing zone', async () => {
+    // 2026-03-08 is the US spring-forward date; the 3-day window spans it.
+    expect(await datesFor('America/Los_Angeles', '2026-03-07T00:00:00')).toEqual([
+      '2026-03-07T00:00:00.000Z',
+      '2026-03-08T00:00:00.000Z',
+      '2026-03-09T00:00:00.000Z',
+    ]);
+  });
+
+  it('emits three midnight-UTC days across a fall-back transition in a DST-observing zone', async () => {
+    // 2026-11-01 is the US fall-back date.
+    expect(await datesFor('America/Los_Angeles', '2026-11-01T00:00:00')).toEqual([
+      '2026-11-01T00:00:00.000Z',
+      '2026-11-02T00:00:00.000Z',
+      '2026-11-03T00:00:00.000Z',
+    ]);
+  });
+
+  it('emits the same dates under UTC as under a DST-observing zone (baseline regression)', async () => {
+    const utcSpring = await datesFor('UTC', '2026-03-07T00:00:00');
+    const utcFall = await datesFor('UTC', '2026-11-01T00:00:00');
+
+    expect(utcSpring).toEqual([
+      '2026-03-07T00:00:00.000Z',
+      '2026-03-08T00:00:00.000Z',
+      '2026-03-09T00:00:00.000Z',
+    ]);
+    expect(utcFall).toEqual([
+      '2026-11-01T00:00:00.000Z',
+      '2026-11-02T00:00:00.000Z',
+      '2026-11-03T00:00:00.000Z',
+    ]);
+  });
+
+  it('holds the day-0-is-the-feed-row-date and distinct-calendar-day invariants in a southern-hemisphere DST zone', async () => {
+    // Sydney shifts the opposite way from Los Angeles; both must produce the same UTC days.
+    const dates = await datesFor('Australia/Sydney', '2026-04-04T00:00:00');
+
+    expect(dates).toHaveLength(3);
+    expect(dates[0]).toBe('2026-04-04T00:00:00.000Z'); // never the feed date plus one
+    expect(new Set(dates.map((d) => d.slice(0, 10))).size).toBe(3); // no duplicated calendar day
+    expect(dates.every((d) => d.endsWith('T00:00:00.000Z'))).toBe(true);
+  });
+});
+
+describe('kpToGScale thresholds (#27)', () => {
+  /**
+   * SWPC publishes Kp in thirds and starts each G level at that level's "minus"
+   * value, so the four minus-thirds below are the values that previously came back
+   * one level low. 8.67 (9−) is G4 per the NOAA scales page, not G5.
+   */
+  const BOUNDARY_CASES: [kp: number, gScale: number][] = [
+    [4.33, 0],
+    [4.67, 1],
+    [5.33, 1],
+    [5.67, 2],
+    [6.33, 2],
+    [6.67, 3],
+    [7.33, 3],
+    [7.67, 4],
+    [8.33, 4],
+    [8.67, 4],
+    [9.0, 5],
+  ];
+
+  it.each(BOUNDARY_CASES)('maps Kp %s to G%s', (kp, gScale) => {
+    expect(kpToGScale(kp)).toBe(gScale);
+  });
+
+  it('resolves every integer K value exactly as before (alert-path regression)', () => {
+    expect([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(kpToGScale)).toEqual([0, 0, 0, 0, 0, 1, 2, 3, 4, 5]);
+  });
+});
+
+describe('SpaceWeatherService.fetchFeed body handling (#25)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('treats a bare NaN in a numeric value position as missing data, keeping sibling fields', async () => {
+    mockFetch.mockResolvedValue(
+      makeRawResponse(
+        '[{"active":true,"proton_speed":NaN,"proton_density":5.1,"proton_temperature":90000,"source":"SOLAR1","time_tag":"2026-08-11 00:00:00.000"}]',
+      ),
+    );
+
+    const plasma = await makeService().getSolarWindPlasma(createMockContext() as never);
+
+    expect(plasma[0]!.speedKmS).toBeNull();
+    expect(plasma[0]!.densityPerCm3).toBe(5.1);
+    expect(plasma[0]!.temperatureK).toBe(90000);
+    expect(plasma[0]!.timeTag).toBe('2026-08-11T00:00:00.000Z');
+  });
+
+  it('applies the same tolerance to a feed outside the solar-wind path', async () => {
+    // The Kp feed proves the repair lives in fetchFeed, not in an RTSW-specific mapper.
+    mockFetch.mockResolvedValue(
+      makeRawResponse(
+        '[{"time_tag":"2026-06-23T00:00:00","Kp":3,"a_running":Infinity,"station_count":-Infinity}]',
+      ),
+    );
+
+    const obs = await makeService().getKpObserved(createMockContext() as never);
+
+    expect(obs[0]!.kp).toBe(3);
+    expect(obs[0]!.aRunning).toBeNull();
+    expect(obs[0]!.stationCount).toBeNull();
+  });
+
+  it('leaves NaN inside a quoted string value exactly as it is', async () => {
+    mockFetch.mockResolvedValue(
+      makeRawResponse(
+        '[{"active":true,"source":"speed: NaN reported","proton_speed":NaN,"proton_density":5.1,"proton_temperature":90000,"time_tag":"2026-08-11 00:00:00.000"}]',
+      ),
+    );
+
+    const plasma = await makeService().getSolarWindPlasma(createMockContext() as never);
+
+    expect(plasma[0]!.source).toBe('speed: NaN reported');
+    expect(plasma[0]!.speedKmS).toBeNull();
+  });
+
+  it('leaves NaN inside a key name exactly as it is', async () => {
+    // The scales feed reports its own keys back when "0" is absent, so a key name
+    // surviving the repair is observable through the public method.
+    mockFetch.mockResolvedValue(
+      makeRawResponse('{"NaN_diagnostics":{"note":"sensor NaN"},"9":{"DateStamp":NaN}}'),
+    );
+
+    // Integer-like keys enumerate first, so "9" precedes the diagnostics key.
+    await expect(makeService().getNoaaScales(createMockContext() as never)).rejects.toMatchObject({
+      data: { available: ['9', 'NaN_diagnostics'] },
+    });
+  });
+
+  it('still fails an ordinarily malformed body on the service-unavailable path', async () => {
+    // Truncated array — no non-finite token, so the repair never applies.
+    mockFetch.mockResolvedValue(makeRawResponse('[{"active":true,"proton_speed":475.4'));
+
+    await expect(
+      makeService().getSolarWindPlasma(createMockContext() as never),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining(
+        'Failed to parse SWPC feed JSON from /json/rtsw/rtsw_wind_1m.json.',
+      ),
+      data: { path: '/json/rtsw/rtsw_wind_1m.json' },
+    });
+  });
+
+  it('still fails a body whose only non-finite tokens sit inside strings and cannot repair it', async () => {
+    // Quoted NaN is left alone, so the trailing comma remains the fatal error.
+    mockFetch.mockResolvedValue(makeRawResponse('[{"source":"NaN","active":true,}]'));
+
+    await expect(
+      makeService().getSolarWindPlasma(createMockContext() as never),
+    ).rejects.toMatchObject({
+      data: { path: '/json/rtsw/rtsw_wind_1m.json' },
+    });
+  });
+
+  it('parses a valid body to the identical result', async () => {
+    const body =
+      '[{"active":true,"source":"SOLAR1","proton_speed":475.4,"proton_density":4.95,"proton_temperature":304713,"time_tag":"2026-07-16T05:00:00"}]';
+    mockFetch.mockResolvedValue(makeRawResponse(body));
+
+    const plasma = await makeService().getSolarWindPlasma(createMockContext() as never);
+
+    expect(plasma).toEqual([
+      {
+        timeTag: '2026-07-16T05:00:00Z',
+        source: 'SOLAR1',
+        densityPerCm3: 4.95,
+        speedKmS: 475.4,
+        temperatureK: 304713,
+      },
+    ]);
+  });
+
+  it('still rejects an HTML error page before any JSON repair is attempted', async () => {
+    mockFetch.mockResolvedValue(makeRawResponse('<!DOCTYPE html><html><body>429</body></html>'));
+
+    await expect(
+      makeService().getSolarWindPlasma(createMockContext() as never),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('SWPC feed returned HTML instead of JSON'),
+    });
   });
 });

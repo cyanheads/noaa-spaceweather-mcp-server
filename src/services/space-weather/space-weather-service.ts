@@ -8,7 +8,7 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
-import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { fetchWithTimeout, type RequestContext, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
@@ -45,36 +45,191 @@ const FILL_VALUE = -9999;
 
 // ── NOAA scale helpers ──────────────────────────────────────────────────────
 
-/** Maps Kp value (0–9) to NOAA G-scale level (0–5). Shared with get-kp-index tool. */
+/**
+ * Maps a Kp value (0–9) to its NOAA G-scale level (0–5). Shared with the
+ * get-kp-index tool.
+ *
+ * SWPC publishes Kp in thirds and starts each G level at that level's "minus"
+ * value, so G1 begins at 5− (4.67) rather than 5. Rounding to thirds
+ * (`Math.round(kp * 3)`) maps every spelling of a third — 4.67, 4.66 — onto one
+ * integer, which makes the bands exact integer comparisons instead of float
+ * compares needing a tuned epsilon per band. The top boundary follows the NOAA
+ * scales page, which gives G4 as "Kp = 8, including a 9-" and G5 as "Kp = 9": 8.67
+ * is G4 and only 9.00 is G5.
+ */
 export function kpToGScale(kp: number): number {
-  if (kp >= 9) return 5;
-  if (kp >= 8) return 4;
-  if (kp >= 7) return 3;
-  if (kp >= 6) return 2;
-  if (kp >= 5) return 1;
+  const thirds = Math.round(kp * 3);
+  if (thirds >= 27) return 5; // 9.00
+  if (thirds >= 23) return 4; // 7.67
+  if (thirds >= 20) return 3; // 6.67
+  if (thirds >= 17) return 2; // 5.67
+  if (thirds >= 14) return 1; // 4.67
   return 0;
+}
+
+/** One geomagnetic-latitude band of the aurora reachability table. */
+export interface AuroraBand {
+  /** Equatorward edge of the band, in degrees of geomagnetic latitude. */
+  geomagneticLatitude: number;
+  /** NOAA G level that reaches this band; 0 means inside the quiet-time oval. */
+  gScale: number;
+  /** Kp floor at which that G level begins; 0 inside the oval. */
+  minKp: number;
+}
+
+/**
+ * Aurora reachability by geomagnetic latitude, keyed on NOAA G level, ordered
+ * poleward-first. The single table for the whole server: aurora-latitude guidance
+ * on the Kp tools and the Kp threshold the aurora tool reports for a location both
+ * read it, so the two can no longer state different thresholds for one place.
+ *
+ * Latitudes for G2–G5 are the NOAA scales page figures. The 60° G1 row is this
+ * server's interpolation between that page's G2 row and the oval edge — the page
+ * states no G1 latitude. The 65° row is not a storm level at all: it is the
+ * quiet-time equatorward edge of the auroral oval, where aurora needs no elevated
+ * Kp. Below the 40° G5 row no level on the scale reaches.
+ *
+ * Each Kp floor is its level's "minus" third — the value at which SWPC starts the
+ * level, per {@link kpToGScale} — except G5, which begins at a whole Kp 9.
+ */
+export const AURORA_BANDS: readonly AuroraBand[] = [
+  { geomagneticLatitude: 65, gScale: 0, minKp: 0 },
+  { geomagneticLatitude: 60, gScale: 1, minKp: 4.67 },
+  { geomagneticLatitude: 55, gScale: 2, minKp: 5.67 },
+  { geomagneticLatitude: 50, gScale: 3, minKp: 6.67 },
+  { geomagneticLatitude: 45, gScale: 4, minKp: 7.67 },
+  { geomagneticLatitude: 40, gScale: 5, minKp: 9.0 },
+];
+
+/**
+ * Resolve the aurora band a geomagnetic latitude sits in, north or south. Returns
+ * null equatorward of the 40° G5 edge, where no NOAA storm level reaches.
+ */
+export function auroraBandForGeomagneticLatitude(geomagneticLatitude: number): AuroraBand | null {
+  const abs = Math.abs(geomagneticLatitude);
+  return AURORA_BANDS.find((band) => abs >= band.geomagneticLatitude) ?? null;
 }
 
 /** Returns aurora visibility latitude guidance for a G-scale level. */
 function gScaleToAuroraLatitude(gScale: number): string {
-  switch (gScale) {
-    case 5:
-      return 'Aurora possible to ~40° geomagnetic latitude';
-    case 4:
-      return 'Aurora possible to ~45° geomagnetic latitude';
-    case 3:
-      return 'Aurora possible to ~50° geomagnetic latitude';
-    case 2:
-      return 'Aurora possible to ~55° geomagnetic latitude';
-    case 1:
-      return 'Aurora possible to ~60° geomagnetic latitude';
-    default:
-      return 'No significant aurora expected at mid-latitudes';
-  }
+  // G0 is "no storm", not the 65° oval row that also carries gScale 0.
+  const band = gScale > 0 ? AURORA_BANDS.find((b) => b.gScale === gScale) : undefined;
+  return band
+    ? `Aurora possible to ~${band.geomagneticLatitude}° geomagnetic latitude`
+    : 'No significant aurora expected at mid-latitudes';
 }
 
 // ── Shared fetch helper ─────────────────────────────────────────────────────
 
+/**
+ * Matches a JSON string literal, or a bare non-finite numeric token outside one.
+ * The string alternative comes first so a quoted value or a key name is consumed
+ * whole and never rewritten — including one whose text contains "NaN".
+ */
+const NON_FINITE_TOKEN_RE = /"(?:[^"\\]|\\.)*"|-?\bInfinity\b|\bNaN\b/g;
+
+/**
+ * Replace bare `NaN` / `Infinity` / `-Infinity` tokens in numeric value positions
+ * with JSON `null`, leaving every quoted string byte-identical. SWPC emits these
+ * non-standard tokens for a failed sensor reading, which is what `null` already
+ * means to {@link parseNum}.
+ */
+function nullOutNonFiniteTokens(text: string): string {
+  return text.replace(NON_FINITE_TOKEN_RE, (match) => (match.startsWith('"') ? match : 'null'));
+}
+
+/** Parse JSON, returning null instead of throwing so a caller can try a repair. */
+function tryParseJson<T>(text: string): { value: T } | null {
+  try {
+    return { value: JSON.parse(text) as T };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The declared failure reasons every tool's `errors[]` exposes for an upstream feed
+ * failure. They split on whether retrying can ever help, because the recovery hint
+ * `ctx.recoveryFor` resolves is one-per-reason and the two hints point in opposite
+ * directions.
+ */
+type FeedFailureReason = 'feed_unavailable' | 'feed_moved';
+
+/**
+ * Wire-shaped feed failure: the caller's tool contract supplies the recovery hint,
+ * `path` names the feed on every class (an HTTP-origin error carries a status but no
+ * path of its own), and `data` from the underlying rejection is preserved so `status`,
+ * `statusText`, `retryAfter`, `retryAttempts`, and `available` survive.
+ *
+ * Both reasons map to `ServiceUnavailable`: the failure is upstream, and no 4xx from
+ * these keyless feeds can be caused by caller input. `feed_moved` also carries
+ * `retryable: false`, so a caller — or any outer retry — can see that re-attempting a
+ * path SWPC no longer serves cannot succeed.
+ */
+function feedFailure(
+  reason: FeedFailureReason,
+  message: string,
+  path: string,
+  ctx: Context,
+  data?: Record<string, unknown>,
+  cause?: unknown,
+): McpError {
+  return new McpError(
+    JsonRpcErrorCode.ServiceUnavailable,
+    message,
+    {
+      ...data,
+      ...(reason === 'feed_moved' ? { retryable: false } : {}),
+      path,
+      reason,
+      ...ctx.recoveryFor(reason),
+    },
+    cause !== undefined ? { cause } : undefined,
+  );
+}
+
+/**
+ * The codes the framework's retry predicate treats as transient, so a rejection
+ * carrying one has already been through all four attempts.
+ */
+const RETRIED_CODES: ReadonlySet<JsonRpcErrorCode> = new Set([
+  JsonRpcErrorCode.ServiceUnavailable,
+  JsonRpcErrorCode.Timeout,
+  JsonRpcErrorCode.RateLimited,
+]);
+
+/**
+ * Which reason an upstream rejection belongs to, or null when it is not a feed failure
+ * at all and must pass through untouched.
+ *
+ * A 4xx the framework treats as permanent means the feed path itself no longer resolves
+ * — these tools take no upstream identifier, so nothing a caller sent can produce one
+ * (#21 was SWPC deleting a feed outright). Keying on the retry verdict rather than the
+ * status range alone is what keeps `feed_moved` synonymous with "failed on the first
+ * attempt": a 408 or 425 is a 4xx the framework classifies as `Timeout` and retries, so
+ * it belongs with the transient set. Everything else — 5xx, 429, network error, client
+ * deadline, unparseable or HTML body — clears on its own and stays retryable.
+ */
+function feedFailureReason(error: unknown): FeedFailureReason | null {
+  if (error instanceof McpError) {
+    if (error.code === JsonRpcErrorCode.RequestCancelled) return null;
+    const status = error.data?.status;
+    const permanentStatus = typeof status === 'number' && status >= 400 && status < 500;
+    if (permanentStatus && !RETRIED_CODES.has(error.code)) return 'feed_moved';
+  }
+  return 'feed_unavailable';
+}
+
+/**
+ * The single funnel every feed call passes through, so it is also where a rejection is
+ * classified against the tools' declared error contract.
+ *
+ * Classification sits **outside** the `withRetry` boundary on purpose. Both reasons
+ * surface as `ServiceUnavailable`, which is in the framework's transient set — rewriting
+ * the code inside the retry closure would turn a permanent 404 into four attempts and
+ * seven seconds spent on a feed SWPC no longer serves. Out here the retry decision has
+ * already been made from the upstream code, so attempt counts are untouched.
+ */
 function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T> {
   // Cast ctx to RequestContext for framework utils — Context is structurally
   // compatible but lacks the index signature the type expects.
@@ -96,6 +251,15 @@ function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T>
       try {
         return JSON.parse(text) as T;
       } catch (err) {
+        // A bare NaN/Infinity token is a lexical error: the parse aborts before any
+        // value exists, so a reviver can never reach it. Repair only a body that has
+        // already failed — the happy path never pays for the scan, and these bodies
+        // reach 4.5 MB.
+        const repaired = nullOutNonFiniteTokens(text);
+        if (repaired !== text) {
+          const parsed = tryParseJson<T>(repaired);
+          if (parsed) return parsed.value;
+        }
         throw serviceUnavailable(
           `Failed to parse SWPC feed JSON from ${path}.`,
           { path },
@@ -109,7 +273,20 @@ function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T>
       baseDelayMs: 1000,
       signal: ctx.signal,
     },
-  );
+  ).catch((error: unknown) => {
+    // The caller withdrew the request; nothing about the feed failed.
+    if (ctx.signal.aborted) throw error;
+    const reason = feedFailureReason(error);
+    if (reason === null) throw error;
+    throw feedFailure(
+      reason,
+      error instanceof Error ? error.message : `SWPC feed request failed for ${path}.`,
+      path,
+      ctx,
+      error instanceof McpError ? error.data : undefined,
+      error,
+    );
+  });
 }
 
 // ── Normalization helpers ───────────────────────────────────────────────────
@@ -227,6 +404,48 @@ const CATEGORY_RE = /category\s+([GRS]\d)/i;
 const CANCEL_RE = /^CANCEL\s+(?:WARNING|WATCH|ALERT):/im;
 
 /**
+ * Matches the record's own serial number. Line-anchored on purpose: every cancellation,
+ * extension, and continuation also carries a "<prefix> Serial Number:" field naming a
+ * *different* record, and an unanchored pattern would read one of those as this
+ * record's own serial.
+ */
+const SERIAL_RE = /^Serial\s+Number:\s*(\S+)/im;
+
+/** Matches the serial a cancellation names as its target. */
+const CANCEL_SERIAL_RE = /^Cancel\s+Serial\s+Number:\s*(\S+)/im;
+
+/**
+ * Matches the issue time a cancellation restates for its target. Only a cancellation
+ * carries this line, so it never collides with the record's own "Issue Time:".
+ */
+const ORIGINAL_ISSUE_TIME_RE = /^Original\s+Issue\s+Time:\s*([^\r\n]+)/im;
+
+/**
+ * Matches the supersede claim every in-force Watch carries ("THIS SUPERSEDES ANY/ALL
+ * PRIOR WATCHES IN EFFECT"). Line-anchored and keyed on the opening words so a body
+ * mentioning the word in prose cannot trigger it.
+ */
+const SUPERSEDES_RE = /^THIS\s+SUPERSEDES\b/im;
+
+/**
+ * Matches the header above a Watch's per-day storm outlook, consuming the rest of its
+ * line so the entry scan starts on the first day line. A cancellation states its days
+ * under "Cancelled Level Predicted:", which deliberately does not match — that list
+ * describes what was called off, not a period the product covers.
+ */
+const PREDICTED_DAY_HEADER_RE = /^Highest\s+Storm\s+Level\s+Predicted\s+by\s+Day:[^\n]*\n/im;
+
+/**
+ * Matches one "<Mon> <DD>:  <Level> (<Descriptor>)" entry of a predicted-day line.
+ * The colon must follow the day with no space: the cancellation list writes
+ * "Sep 08  : None (Bellow G1)", a second guard against parsing one.
+ */
+const PREDICTED_DAY_ENTRY_RE = /\b([A-Za-z]{3})\s+(\d{1,2}):\s+(\S+)/g;
+
+/** The level SWPC writes for a day it forecasts no storm on. */
+const NO_STORM_LEVEL = 'none';
+
+/**
  * Extract the NOAA scale a product body states, e.g. "G1", "R2", "S1". Prefers the
  * explicit "NOAA Scale:" label and falls back to a Watch headline's "Category G<n>".
  * Returns null for products carrying neither — K4 warnings sit below the G-scale, and
@@ -294,6 +513,59 @@ function parseValidity(message: string, labelRe: RegExp): string | null {
   const value = message.match(labelRe)?.[1]?.trim();
   if (!value) return null;
   return parseSwpcDatetime(value) ?? value;
+}
+
+/**
+ * Derive a validity end from a Watch's "Highest Storm Level Predicted by Day:" list,
+ * as ISO 8601 UTC. No `WAT*` product carries a validity label, so this list is the
+ * only thing in the body that states how far the Watch reaches — without it, every
+ * Watch's end reads as unknown and an elapsed-end filter can never drop one.
+ *
+ * The end is the *end* of the last listed UTC day whose level is not "None", expressed
+ * as the start of the following day. A trailing "None" day forecasts quiet rather than
+ * extending coverage, so taking the last listed day instead over-extends by a full day
+ * on most live Watches; a list that is "None" throughout covers nothing and yields null.
+ *
+ * The list states no year. It is taken from `issueDatetime`, rolled forward for a
+ * January day listed by a December Watch — the only boundary a forward-looking
+ * three-day outlook can cross.
+ *
+ * Returns null when the body carries no such list, when its days are all quiet, or when
+ * the issue time cannot be read (there is then no year to resolve the days against).
+ */
+function parsePredictedDayEnd(message: string, issueDatetime: string): string | null {
+  const header = message.match(PREDICTED_DAY_HEADER_RE);
+  if (header?.index === undefined) return null;
+
+  const issueMs = Date.parse(issueDatetime);
+  if (Number.isNaN(issueMs)) return null;
+  const issued = new Date(issueMs);
+
+  let lastStormDay: { month: number; day: number } | null = null;
+  // Day entries sit on the line(s) directly after the header, with no blank line before
+  // whatever follows them (a live Watch runs straight into its supersede line), so the
+  // scan stops at the first line carrying no entry rather than at a paragraph break.
+  for (const line of message.slice(header.index + header[0].length).split('\n')) {
+    const entries = [...line.matchAll(PREDICTED_DAY_ENTRY_RE)];
+    if (entries.length === 0) break;
+    for (const [, monthAbbr, dayRaw, level] of entries) {
+      if (!(monthAbbr && dayRaw && level)) continue;
+      const month = SWPC_MONTHS[monthAbbr.toLowerCase()];
+      if (!month || level.toLowerCase() === NO_STORM_LEVEL) continue;
+      lastStormDay = { month: Number(month), day: Number(dayRaw) };
+    }
+  }
+  if (!lastStormDay) return null;
+
+  const year =
+    issued.getUTCMonth() + 1 === 12 && lastStormDay.month === 1
+      ? issued.getUTCFullYear() + 1
+      : issued.getUTCFullYear();
+  // Date.UTC rolls a day past the month's length into the next month — and a December
+  // 32nd into the next year — so the day-after arithmetic needs no calendar guard.
+  const end = new Date(Date.UTC(year, lastStormDay.month - 1, lastStormDay.day + 1));
+  // Match the label-parsed values, which carry no milliseconds.
+  return end.toISOString().replace(/\.000Z$/, 'Z');
 }
 
 // ── Raw feed types ─────────────────────────────────────────────────────────
@@ -441,11 +713,8 @@ export class SpaceWeatherService {
 
   /** Fetch current NOAA storm scales (today + 3-day forecast). */
   async getNoaaScales(ctx: Context): Promise<NoaaScalesData> {
-    const raw = await fetchFeed<Record<string, RawScalesPeriod>>(
-      '/products/noaa-scales.json',
-      ctx,
-      this.userAgent,
-    );
+    const path = '/products/noaa-scales.json';
+    const raw = await fetchFeed<Record<string, RawScalesPeriod>>(path, ctx, this.userAgent);
 
     const normalizePeriod = (r: RawScalesPeriod): NoaaScalesPeriod => ({
       date: r.DateStamp ?? '',
@@ -474,8 +743,10 @@ export class SpaceWeatherService {
     });
 
     const today = raw['0'];
+    // The feed answered, but not with the shape it is documented to have — the same
+    // class of break as a path that no longer resolves, and equally unfixable by a retry.
     if (!today)
-      throw serviceUnavailable('SWPC scales feed missing key "0" (today).', {
+      throw feedFailure('feed_moved', 'SWPC scales feed missing key "0" (today).', path, ctx, {
         available: Object.keys(raw),
       });
 
@@ -541,9 +812,11 @@ export class SpaceWeatherService {
         forecastTime: raw['Forecast Time'] ?? '',
       },
       grid: (raw.coordinates ?? []).map(([lon, lat, aurora]) => ({
-        // OVATION grid uses 0–360 longitude. Normalize to −180..179 so user
-        // coordinates (WGS84 standard −180..180) map to the same range for
-        // nearest-grid-point search.
+        // OVATION grid uses 0–360 longitude. Normalize so user coordinates (WGS84
+        // standard −180..180) map to the same range for nearest-grid-point search.
+        // The result runs −179..180: the 180 column stays put and there is no −180
+        // column, so the search has to compare longitudes with an antimeridian wrap
+        // rather than a raw difference.
         longitude: lon > 180 ? lon - 360 : lon,
         latitude: lat,
         auroraPercent: aurora,
@@ -663,10 +936,13 @@ export class SpaceWeatherService {
     // Normalize to UTC: the date field is "2026-06-04T00:00:00" without a 'Z',
     // so new Date() would interpret it as local time. Append 'Z' to force UTC.
     const rawDate = latest.date.endsWith('Z') ? latest.date : `${latest.date}Z`;
-    const baseDate = new Date(rawDate);
+    // Advance the epoch by whole UTC days. `setDate`/`getDate` read the process
+    // timezone's calendar, so a window crossing a DST transition there shifts the
+    // emitted instant by the offset change — duplicating one forecast day at a
+    // spring-forward and dropping every date off midnight UTC at a fall-back.
+    const baseMs = new Date(rawDate).getTime();
     return [0, 1, 2].map((dayOffset) => {
-      const d = new Date(baseDate);
-      d.setDate(d.getDate() + dayOffset);
+      const date = new Date(baseMs + dayOffset * 86_400_000);
       const suffix = dayOffset === 0 ? '1_day' : dayOffset === 1 ? '2_day' : '3_day';
       // Parse each probability once, then expose it under both the legacy
       // date-specific name and the date-neutral alias (#16) so the two never drift.
@@ -676,7 +952,7 @@ export class SpaceWeatherService {
       const protons =
         parseNum(latest[`10mev_protons_${suffix}` as keyof RawSolarProbs] as string) ?? 0;
       return {
-        date: d.toISOString(),
+        date: date.toISOString(),
         cClass1Day: cClass,
         cClassProbability: cClass,
         mClass1Day: mClass,
@@ -726,6 +1002,11 @@ export class SpaceWeatherService {
       // The body's NOAA scale drives both level and phenomenon — the message code's
       // suffix and prefix shape misreport both for most live products.
       const noaaScale = parseNoaaScale(message);
+      // Normalize SWPC's space-separated datetime ("2026-06-06 22:11:17") to ISO 8601 so
+      // downstream Date comparisons work correctly (the SpaceWeatherAlert.issueDatetime
+      // contract says ISO 8601; raw feed values break string comparisons with ISO cutoffs).
+      // The predicted-day derivation below also reads it, for the year its days omit.
+      const issueDatetime = normalizeSwpcTime(r.issue_datetime ?? '');
       return {
         productId: id,
         messageCode: msgCode,
@@ -733,10 +1014,11 @@ export class SpaceWeatherService {
         level: parseLevel(msgCode, noaaScale),
         noaaScale,
         cancelled: CANCEL_RE.test(message),
-        // Normalize SWPC's space-separated datetime ("2026-06-06 22:11:17") to ISO 8601 so
-        // downstream Date comparisons work correctly (the SpaceWeatherAlert.issueDatetime
-        // contract says ISO 8601; raw feed values break string comparisons with ISO cutoffs).
-        issueDatetime: normalizeSwpcTime(r.issue_datetime ?? ''),
+        serialNumber: message.match(SERIAL_RE)?.[1] ?? null,
+        cancelsSerialNumber: message.match(CANCEL_SERIAL_RE)?.[1] ?? null,
+        cancelsOriginalIssueDatetime: parseValidity(message, ORIGINAL_ISSUE_TIME_RE),
+        supersedes: SUPERSEDES_RE.test(message),
+        issueDatetime,
         message,
         phenomenon: parsePhenomenon(msgCode, noaaScale),
         // Validity window parsed from the message body, normalized to ISO 8601.
@@ -745,10 +1027,11 @@ export class SpaceWeatherService {
         // and Alerts/Summaries use "Begin/End Time". Products with no such line
         // keep null.
         validFrom: parseValidity(message, /(?:Valid\s+From|Begin\s+Time):\s*([^\r\n]+)/i),
-        validTo: parseValidity(
-          message,
-          /(?:Valid\s+To|Now\s+Valid\s+Until|End\s+Time):\s*([^\r\n]+)/i,
-        ),
+        // A Watch carries no end label at all, so fall back to the end its per-day
+        // storm outlook implies. A stated label always wins over the derivation.
+        validTo:
+          parseValidity(message, /(?:Valid\s+To|Now\s+Valid\s+Until|End\s+Time):\s*([^\r\n]+)/i) ??
+          parsePredictedDayEnd(message, issueDatetime),
       };
     });
   }

@@ -225,6 +225,63 @@ describe('getKpIndex', () => {
     expect(f3!.gLabel).toBe('G5');
   });
 
+  it('labels SWPC minus-third forecast values with the G level SWPC itself assigns (#27)', async () => {
+    // SWPC emits Kp in thirds and tags 4.67 as G1 in the same forecast record, via
+    // noaa_scale. The derived gScale must agree with it rather than sit a level low.
+    const thirds: [kp: number, noaaScale: string, gScale: number][] = [
+      [4.33, 'G0', 0],
+      [4.67, 'G1', 1],
+      [5.33, 'G1', 1],
+      [5.67, 'G2', 2],
+      [6.67, 'G3', 3],
+      [7.67, 'G4', 4],
+      [8.67, 'G4', 4], // 9− is G4 per the NOAA scales page, not G5
+      [9.0, 'G5', 5],
+    ];
+    const forecasts: KpForecast[] = thirds.map(([kp, noaaScale], i) => ({
+      timeTag: new Date(Date.now() + (i + 1) * 3 * 60 * 60 * 1000).toISOString(),
+      kp,
+      observed: 'predicted',
+      noaaScale,
+    }));
+    const svc = {
+      getKpObserved: vi.fn().mockResolvedValue(makeObservations(2, 2)),
+      getKpForecast: vi.fn().mockResolvedValue(forecasts),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getKpIndex.errors });
+    const result = await getKpIndex.handler(getKpIndex.input.parse({ window_days: 1 }), ctx);
+
+    expect(result.forecast.map((f) => [f.kp, f.gScale])).toEqual(
+      thirds.map(([kp, , gScale]) => [kp, gScale]),
+    );
+    // The derived label now matches the scale SWPC states in the same record.
+    expect(result.forecast.every((f) => f.gLabel === f.noaaScale)).toBe(true);
+  });
+
+  it('renders the corrected G-scale in content[] as well as structuredContent (#27)', async () => {
+    const forecasts: KpForecast[] = [
+      {
+        timeTag: '2026-09-17T21:00:00Z',
+        kp: 4.67,
+        observed: 'estimated',
+        noaaScale: 'G1',
+      },
+    ];
+    const svc = {
+      getKpObserved: vi.fn().mockResolvedValue(makeObservations(2, 2)),
+      getKpForecast: vi.fn().mockResolvedValue(forecasts),
+    };
+    mockGetSpaceWeatherService.mockReturnValue(svc as never);
+
+    const ctx = createMockContext({ errors: getKpIndex.errors });
+    const result = await getKpIndex.handler(getKpIndex.input.parse({ window_days: 1 }), ctx);
+    const text = (getKpIndex.format!(result)[0] as { text: string }).text;
+
+    expect(text).toContain('Kp 4.67 | G-scale 1 (G1) (G1)');
+  });
+
   it('rejects window_days out of range via Zod validation', () => {
     // window_days is constrained to 1–7 by .min(1).max(7); Zod throws before the handler runs.
     expect(() => getKpIndex.input.parse({ window_days: 0 })).toThrow();

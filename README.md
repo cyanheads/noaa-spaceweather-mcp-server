@@ -57,6 +57,7 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 
 - `window_days` (1–7, default 1) bounds the observed series; the forecast series is always SWPC's full 3-day forecast
 - Each observed/forecast record carries Kp, G-scale equivalent, G-scale label, and aurora-latitude guidance
+- G levels follow SWPC's minus-third band floors — G1 starts at Kp 4.67 (5−), G4 runs through 8.67 (9−), and only Kp 9 is G5
 - Forecast excludes the feed's embedded historical "observed" entries — only forward-looking `estimated`/`predicted` rows
 - `observedCount` reports how many observed readings matched the window
 
@@ -65,7 +66,7 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 ### `noaa_spaceweather_get_aurora_forecast` <sub>tool</sub>
 
 - Without coordinates: global metadata only — grid point count, global peak probability, peak region
-- With `latitude`/`longitude` (WGS84, required together): nearest 1°-grid lookup, minimum Kp needed at that latitude, and a plain-language go/no-go verdict
+- With `latitude`/`longitude` (WGS84, required together): nearest 1°-grid lookup, the centered-dipole geomagnetic latitude those coordinates convert to, the minimum Kp and G level needed at that geomagnetic latitude, and a plain-language go/no-go verdict
 - `invalid_coordinates` error when only one of the pair is supplied
 - OVATION model updates every ~5 minutes; forecast horizon is ~30–60 minutes ahead
 
@@ -92,10 +93,11 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 
 ### `noaa_spaceweather_get_alerts` <sub>tool</sub>
 
-- `active_only` (default true) — in-force Warnings/Watches/Alerts only; cancellations and Summaries excluded
-- `max_age_hours` (1–720, default 48) bounds how far back to look; the SWPC feed itself has no expiry
-- Each record carries product type, NOAA scale + level (0 means "no scale stated," not zero severity), parsed validity window, and full message text
-- `cancelled` flags a record that cancels a prior product rather than being active
+- `active_only` (default true) — in-force Warnings/Watches/Alerts only. A product stays in force until the feed says otherwise, so this also drops any product a later cancellation names by serial, and all but the newest Watch carrying `THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT` — alongside cancellations, Summaries, and products whose validity end has passed
+- `max_age_hours` (1–720, default 48) bounds how far back to look for candidates; the SWPC feed itself has no expiry. Under `active_only=true` it does not cut off a product whose validity end is still ahead, so a multi-day Watch survives until the last day it forecasts a storm for ends; under `active_only=false` it is a literal age cutoff
+- Each record carries product type, NOAA scale + level (0 means "no scale stated," not zero severity), serial number, parsed validity window, and full message text
+- `cancelled` flags a record that cancels a prior product rather than being active; the product it cancels is a separate record, excluded by the serial link rather than by this flag
+- Under `active_only=true` the response echoes the applied window and counts what it excluded, by reason — so an empty result reads as "quiet" or "everything was filtered" without a second call
 
 ---
 
@@ -116,7 +118,7 @@ Agent-friendly output:
 - Observed timestamps on every response so agents can reason about data freshness
 - Plain-language summaries and verdicts alongside raw values — agents can display or reason without re-interpreting indices
 - Bz component surfaced as a first-class field in solar wind output (southward Bz = primary storm driver)
-- Typed error contracts with recovery hints: `feed_unavailable` → "Retry in 30–60 s"
+- Typed error contracts with recovery hints, split on whether retrying can help: a transient feed failure is `feed_unavailable` → "Retry in 30–60 s"; a feed path SWPC no longer serves is `feed_moved` → "Retrying will not help", raised on the first attempt
 
 ---
 
