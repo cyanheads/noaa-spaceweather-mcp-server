@@ -13,6 +13,8 @@ import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { fetchWithTimeout, type RequestContext, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
   AuroraForecastData,
+  F107Observation,
+  ForecastDiscussion,
   KpForecast,
   KpObservation,
   NoaaScalesData,
@@ -23,6 +25,7 @@ import type {
   SolarWindMag,
   SolarWindPlasma,
   SpaceWeatherAlert,
+  XrayFlare,
   XrayFlux,
 } from './types.js';
 
@@ -220,9 +223,14 @@ function feedFailureReason(error: unknown): FeedFailureReason | null {
   return 'feed_unavailable';
 }
 
+/** Matches a body whose first markup is an HTML document rather than feed content. */
+const HTML_BODY_RE = /^\s*<(!DOCTYPE\s+html|html[\s>])/i;
+
 /**
- * The single funnel every feed call passes through, so it is also where a rejection is
- * classified against the tools' declared error contract.
+ * The single funnel every feed call passes through — JSON or plain text — so it is also
+ * the one place a rejection is classified against the tools' declared error contract.
+ * A second fetch path with its own retry and error handling would lose `data.reason`,
+ * `data.path`, and the contract recovery hint.
  *
  * Classification sits **outside** the `withRetry` boundary on purpose. Both reasons
  * surface as `ServiceUnavailable`, which is in the framework's transient set — rewriting
@@ -230,50 +238,20 @@ function feedFailureReason(error: unknown): FeedFailureReason | null {
  * seven seconds spent on a feed SWPC no longer serves. Out here the retry decision has
  * already been made from the upstream code, so attempt counts are untouched.
  */
-function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T> {
+function withFeedClassification<T>(
+  path: string,
+  ctx: Context,
+  run: (reqCtx: RequestContext) => Promise<T>,
+): Promise<T> {
   // Cast ctx to RequestContext for framework utils — Context is structurally
   // compatible but lacks the index signature the type expects.
   const reqCtx = ctx as unknown as RequestContext;
-  return withRetry(
-    async () => {
-      const url = `${BASE_URL}${path}`;
-      const response = await fetchWithTimeout(url, FETCH_TIMEOUT_MS, reqCtx, {
-        signal: ctx.signal,
-        headers: { 'User-Agent': userAgent },
-      });
-      const text = await response.text();
-      if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
-        throw serviceUnavailable(
-          `SWPC feed returned HTML instead of JSON — likely rate-limited or unavailable.`,
-          { path },
-        );
-      }
-      try {
-        return JSON.parse(text) as T;
-      } catch (err) {
-        // A bare NaN/Infinity token is a lexical error: the parse aborts before any
-        // value exists, so a reviver can never reach it. Repair only a body that has
-        // already failed — the happy path never pays for the scan, and these bodies
-        // reach 4.5 MB.
-        const repaired = nullOutNonFiniteTokens(text);
-        if (repaired !== text) {
-          const parsed = tryParseJson<T>(repaired);
-          if (parsed) return parsed.value;
-        }
-        throw serviceUnavailable(
-          `Failed to parse SWPC feed JSON from ${path}.`,
-          { path },
-          { cause: err },
-        );
-      }
-    },
-    {
-      operation: `fetchFeed:${path}`,
-      context: reqCtx,
-      baseDelayMs: 1000,
-      signal: ctx.signal,
-    },
-  ).catch((error: unknown) => {
+  return withRetry(() => run(reqCtx), {
+    operation: `fetchFeed:${path}`,
+    context: reqCtx,
+    baseDelayMs: 1000,
+    signal: ctx.signal,
+  }).catch((error: unknown) => {
     // The caller withdrew the request; nothing about the feed failed.
     if (ctx.signal.aborted) throw error;
     const reason = feedFailureReason(error);
@@ -289,19 +267,87 @@ function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T>
   });
 }
 
+/** One request for `path`, returning the body as text. */
+async function requestBody(
+  path: string,
+  reqCtx: RequestContext,
+  signal: AbortSignal,
+  userAgent: string,
+): Promise<string> {
+  const response = await fetchWithTimeout(`${BASE_URL}${path}`, FETCH_TIMEOUT_MS, reqCtx, {
+    signal,
+    headers: { 'User-Agent': userAgent },
+  });
+  return response.text();
+}
+
+/** Fetch and parse a JSON feed, through the shared retry-plus-classify funnel. */
+function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T> {
+  return withFeedClassification(path, ctx, async (reqCtx) => {
+    const text = await requestBody(path, reqCtx, ctx.signal, userAgent);
+    if (HTML_BODY_RE.test(text)) {
+      throw serviceUnavailable(
+        `SWPC feed returned HTML instead of JSON — likely rate-limited or unavailable.`,
+        { path },
+      );
+    }
+    try {
+      return JSON.parse(text) as T;
+    } catch (err) {
+      // A bare NaN/Infinity token is a lexical error: the parse aborts before any
+      // value exists, so a reviver can never reach it. Repair only a body that has
+      // already failed — the happy path never pays for the scan, and these bodies
+      // reach 4.5 MB.
+      const repaired = nullOutNonFiniteTokens(text);
+      if (repaired !== text) {
+        const parsed = tryParseJson<T>(repaired);
+        if (parsed) return parsed.value;
+      }
+      throw serviceUnavailable(
+        `Failed to parse SWPC feed JSON from ${path}.`,
+        { path },
+        { cause: err },
+      );
+    }
+  });
+}
+
+/**
+ * Fetch a plain-text SWPC product, through the same funnel as {@link fetchFeed}. The
+ * HTML guard applies unchanged: an HTML body from these paths is the rate-limited or
+ * unavailable page, not a product, and it clears on its own.
+ *
+ * Whether the body is the *shape* the product is documented to have is checked by the
+ * caller, after this resolves — the same placement as the scales feed's missing-`"0"`
+ * check, and for the same reason: a `feed_moved` raised in here would be a
+ * `ServiceUnavailable` inside the retry closure and cost four attempts on a break no
+ * retry can fix.
+ */
+function fetchText(path: string, ctx: Context, userAgent: string): Promise<string> {
+  return withFeedClassification(path, ctx, async (reqCtx) => {
+    const text = await requestBody(path, reqCtx, ctx.signal, userAgent);
+    if (HTML_BODY_RE.test(text)) {
+      throw serviceUnavailable(
+        `SWPC product returned HTML instead of text — likely rate-limited or unavailable.`,
+        { path },
+      );
+    }
+    return text;
+  });
+}
+
 // ── Normalization helpers ───────────────────────────────────────────────────
 
 /**
- * Normalize a null/string/number scale value to a number.
- * SWPC returns null for unavailable forecasts — treat as 0 (no storm).
+ * Parse numeric string, returning null if the value is the fill value or NaN.
+ *
+ * The single numeric parse for the scales feed, levels and probabilities alike. SWPC
+ * sends `null` for a period it issues no level for — every forecast period's R and S,
+ * where the forecast is a probability instead — and that null is upstream saying "no
+ * level here", a different claim from level 0. Returning null rather than 0 is what
+ * keeps the two apart (#23); an unparseable value is not a level or a percentage
+ * either and reads the same way.
  */
-function coerceScale(v: unknown): number {
-  if (v == null) return 0;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-/** Parse numeric string, returning null if the value is the fill value or NaN. */
 function parseNum(s: string | number | null | undefined): number | null {
   if (s == null) return null;
   const n = typeof s === 'string' ? parseFloat(s) : s;
@@ -325,12 +371,20 @@ function normalizeSwpcTime(tag: string): string {
 }
 
 /**
- * Order two records oldest-first by ISO 8601 time tag. The RTSW feeds serve
- * newest-first; the solar wind domain records are a chronological series, so
- * ordering is normalized here instead of depending on upstream's.
+ * Comparator ordering records oldest-first on one explicit-UTC ISO 8601 field —
+ * lexicographic compare is chronological once every tag ends in 'Z'.
+ *
+ * Every series this service emits is oldest-first regardless of the order upstream
+ * serves it — the RTSW and F10.7 feeds both serve newest-first — so ordering is an
+ * invariant of the domain types rather than an accident of the feed. Each series names
+ * its own key: solar-wind records carry `timeTag`, a flare event carries no tag of its
+ * own and keys on `beginTime` (the feed's `time_tag` equals `begin_time` on every
+ * record), and an F10.7 report keys on `observedTime`.
  */
-function byTimeTagAscending(a: { timeTag: string }, b: { timeTag: string }): number {
-  return a.timeTag < b.timeTag ? -1 : a.timeTag > b.timeTag ? 1 : 0;
+function byIsoAscending<K extends string>(
+  key: K,
+): (a: Record<K, string>, b: Record<K, string>) => number {
+  return (a, b) => (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0);
 }
 
 /** Three-letter month abbreviations used in SWPC product datetime lines. */
@@ -364,6 +418,108 @@ function parseSwpcDatetime(raw: string): string | null {
   if (!month) return null;
   const day = dayRaw.padStart(2, '0');
   return `${year}-${month}-${day}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00Z`;
+}
+
+// ── Forecast Discussion parsing ─────────────────────────────────────────────
+
+/** Matches the ":Issued:" directive of a SWPC text product and captures its value. */
+const ISSUED_LINE_RE = /^:Issued:\s*(.+)$/im;
+
+/**
+ * Opens a topic section. Every section of the discussion leads with this block, so it
+ * is the anchor the section scan keys on — the heading itself is an unprefixed line
+ * with nothing to distinguish it from body prose except its position above this.
+ */
+const SUMMARY_HEADER_RE = /^\.\s*24\s*hr\s+summary/i;
+
+/** Opens the forecast block inside a topic section. */
+const FORECAST_HEADER_RE = /^\.forecast/i;
+
+/** Any block header — what ends the preceding block's text. */
+const BLOCK_HEADER_RE = /^\./;
+
+/**
+ * True for a line that could be a topic heading: SWPC writes headings unprefixed,
+ * while every other structural line carries a ":directive", "#comment", or ".header"
+ * marker.
+ */
+function isTopicHeading(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    trimmed.length > 0 &&
+    !trimmed.startsWith(':') &&
+    !trimmed.startsWith('#') &&
+    !trimmed.startsWith('.')
+  );
+}
+
+/**
+ * The text of one block, from its header to the next header or the section's end.
+ * Interior blank lines survive — a summary can run several paragraphs, so splitting on
+ * one would truncate it — and the padding at either end does not. Null when the block
+ * is absent or carries no text.
+ */
+function blockText(lines: readonly string[], headerRe: RegExp): string | null {
+  const start = lines.findIndex((line) => headerRe.test(line));
+  if (start === -1) return null;
+  const collected: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (BLOCK_HEADER_RE.test(line)) break;
+    collected.push(line);
+  }
+  while (collected[0]?.trim() === '') collected.shift();
+  while (collected.at(-1)?.trim() === '') collected.pop();
+  return collected.length > 0 ? collected.join('\n') : null;
+}
+
+/**
+ * Parse the SWPC Forecast Discussion product into its topic sections. Returns null
+ * when the body carries no topic section at all, which the caller reports as a shape
+ * break rather than passing off as a discussion with nothing in it: the sections are
+ * the product, and an ":Issued:" line is no evidence of one — every SWPC text product
+ * opens with that directive, so a body carrying it and no section is as likely to be a
+ * different product served on this path as an empty discussion. An absent issue line
+ * alongside real sections is the opposite case and parses, with `issued` null.
+ *
+ * Sections are located from their ".24 hr Summary..." headers: the last non-blank line
+ * above one is the topic heading, and the section runs from there to the next topic
+ * heading. Scanning for unprefixed lines directly would also match every line of body
+ * prose.
+ */
+function parseForecastDiscussion(raw: string): ForecastDiscussion | null {
+  const body = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = body.split('\n');
+  const issuedRaw = body.match(ISSUED_LINE_RE)?.[1]?.trim();
+
+  const starts: { topic: string; topicIndex: number }[] = [];
+  lines.forEach((line, index) => {
+    if (!SUMMARY_HEADER_RE.test(line)) return;
+    for (let above = index - 1; above >= 0; above--) {
+      const candidate = lines[above] ?? '';
+      if (candidate.trim().length === 0) continue;
+      // The first non-blank line above decides: anything marked as a directive,
+      // comment, or another block header means this block opens no new section.
+      if (isTopicHeading(candidate)) starts.push({ topic: candidate.trim(), topicIndex: above });
+      break;
+    }
+  });
+
+  if (starts.length === 0) return null;
+
+  return {
+    // The ":Issued:" value is the same "YYYY Mon DD HHMM UTC" shape the alert bodies
+    // use; fall back to its raw text when it does not match, as the alert parsing does.
+    issued: issuedRaw === undefined ? null : (parseSwpcDatetime(issuedRaw) ?? issuedRaw),
+    sections: starts.map(({ topic, topicIndex }, position) => {
+      const end = starts[position + 1]?.topicIndex ?? lines.length;
+      const sectionLines = lines.slice(topicIndex + 1, end);
+      return {
+        topic,
+        summary: blockText(sectionLines, SUMMARY_HEADER_RE),
+        forecast: blockText(sectionLines, FORECAST_HEADER_RE),
+      };
+    }),
+  };
 }
 
 /** Parse a product code prefix to a product type. */
@@ -570,9 +726,15 @@ function parsePredictedDayEnd(message: string, issueDatetime: string): string | 
 
 // ── Raw feed types ─────────────────────────────────────────────────────────
 
+/**
+ * One category entry of a `noaa-scales.json` period. Which fields are present varies
+ * by category and period: the observed period carries `Scale`/`Text` with null
+ * probabilities, a forecast period carries `Scale: null`/`Text: null` on R and S with
+ * the probabilities populated, and a G entry carries no probability field at all.
+ */
 interface RawScaleEntry {
   MajorProb?: string | number | null;
-  MinorProb: string | number | null;
+  MinorProb?: string | number | null;
   Prob?: string | number | null;
   Scale: string | number | null;
   Text: string | null;
@@ -642,6 +804,36 @@ interface RawXrayFlux {
   flux: number;
   observed_flux: number;
   satellite: number;
+  time_tag: string;
+}
+
+/**
+ * One record of the GOES X-ray flare feed — one discrete flare event, published at
+ * onset. All twelve keys are present on every record, so sparsity arrives as `null`
+ * rather than an absent key. `max_ratio`, `max_ratio_time`, and `current_int_xrlong`
+ * are carried by the feed but deliberately unmapped (see {@link XrayFlare}).
+ */
+interface RawXrayFlare {
+  begin_class: string;
+  begin_time: string;
+  end_class: string | null;
+  end_time: string | null;
+  max_class: string;
+  max_time: string;
+  max_xrlong: number;
+  satellite: number;
+  time_tag: string;
+}
+
+/**
+ * One record of the F10.7 cm radio flux feed. Three per UTC day; `avg_begin_date`,
+ * `ninety_day_mean`, and `rec_count` are populated only on the Noon record.
+ * `frequency` is 2800 on every record and is not mapped.
+ */
+interface RawF107 {
+  flux: number;
+  ninety_day_mean: number | null;
+  reporting_schedule: string;
   time_tag: string;
 }
 
@@ -716,28 +908,37 @@ export class SpaceWeatherService {
     const path = '/products/noaa-scales.json';
     const raw = await fetchFeed<Record<string, RawScalesPeriod>>(path, ctx, this.userAgent);
 
+    // Levels and probabilities both go through parseNum, so an absent or unparseable
+    // value stays null instead of reading as level 0 or a 0% chance. SWPC names the
+    // probability fields per category: R carries MinorProb (R1–R2) and MajorProb
+    // (R3 or greater), S and G carry a single Prob.
     const normalizePeriod = (r: RawScalesPeriod): NoaaScalesPeriod => ({
       date: r.DateStamp ?? '',
       time: r.TimeStamp ?? '',
+      // The feed splits the period stamp across two Z-less fields; joined they are the
+      // space-separated shape normalizeSwpcTime() exists for, and every other
+      // timestamp this service emits is explicit ISO 8601 UTC.
+      observedAt:
+        r.DateStamp && r.TimeStamp ? normalizeSwpcTime(`${r.DateStamp} ${r.TimeStamp}`) : '',
       G: {
         category: 'G',
-        scale: coerceScale(r.G?.Scale),
-        text: r.G?.Text ?? '',
-        minorProb: r.G?.Prob != null ? coerceScale(r.G.Prob) : null,
+        scale: parseNum(r.G?.Scale),
+        text: r.G?.Text ?? null,
+        minorProb: parseNum(r.G?.Prob),
         majorProb: null,
       },
       R: {
         category: 'R',
-        scale: coerceScale(r.R?.Scale),
-        text: r.R?.Text ?? '',
-        minorProb: r.R?.MinorProb != null ? coerceScale(r.R.MinorProb) : null,
-        majorProb: r.R?.MajorProb != null ? coerceScale(r.R.MajorProb) : null,
+        scale: parseNum(r.R?.Scale),
+        text: r.R?.Text ?? null,
+        minorProb: parseNum(r.R?.MinorProb),
+        majorProb: parseNum(r.R?.MajorProb),
       },
       S: {
         category: 'S',
-        scale: coerceScale(r.S?.Scale),
-        text: r.S?.Text ?? '',
-        minorProb: r.S?.Prob != null ? coerceScale(r.S.Prob) : null,
+        scale: parseNum(r.S?.Scale),
+        text: r.S?.Text ?? null,
+        minorProb: parseNum(r.S?.Prob),
         majorProb: null,
       },
     });
@@ -757,6 +958,32 @@ export class SpaceWeatherService {
         .filter((p): p is RawScalesPeriod => p != null)
         .map((p) => normalizePeriod(p)),
     };
+  }
+
+  // ── Forecast Discussion ─────────────────────────────────────────────────
+
+  /**
+   * Fetch the SWPC Forecast Discussion — the forecaster-written narrative explaining
+   * what is driving the storm scales, split into its topic sections.
+   */
+  async getForecastDiscussion(ctx: Context): Promise<ForecastDiscussion> {
+    const path = '/text/discussion.txt';
+    const text = await fetchText(path, ctx, this.userAgent);
+
+    const discussion = parseForecastDiscussion(text);
+    // The product answered, but not with the shape it is documented to have — the same
+    // class of break as the scales feed losing its "0" key, and equally unfixable by a
+    // retry. Raised out here rather than inside fetchText so it costs one attempt.
+    if (!discussion)
+      throw feedFailure(
+        'feed_moved',
+        'SWPC forecast discussion carried no topic section.',
+        path,
+        ctx,
+        { bytes: text.length },
+      );
+
+    return discussion;
   }
 
   // ── Kp Index ────────────────────────────────────────────────────────────
@@ -843,7 +1070,7 @@ export class SpaceWeatherService {
         speedKmS: parseNum(r.proton_speed),
         temperatureK: parseNum(r.proton_temperature),
       }))
-      .sort(byTimeTagAscending);
+      .sort(byIsoAscending('timeTag'));
   }
 
   /**
@@ -863,15 +1090,22 @@ export class SpaceWeatherService {
         bzGsm: parseNum(r.bz_gsm),
         bt: parseNum(r.bt),
       }))
-      .sort(byTimeTagAscending);
+      .sort(byIsoAscending('timeTag'));
   }
 
   // ── Solar Activity ──────────────────────────────────────────────────────
 
-  /** Fetch GOES X-ray flux (7-day, long-channel 0.1-0.8nm only). */
+  /**
+   * Fetch GOES X-ray flux (6-hour, long-channel 0.1-0.8nm only).
+   *
+   * The 6-hour feed's records are byte-identical to the newest 710 of the 7-day
+   * feed — same seven keys, same two energy channels, same 1-minute cadence, same
+   * newest time tag — so the past-hour slice its only caller takes is the same 61
+   * records either way, for ~4.36 MB less per call.
+   */
   async getXrayFlux(ctx: Context): Promise<XrayFlux[]> {
     const raw = await fetchFeed<RawXrayFlux[]>(
-      '/json/goes/primary/xrays-7-day.json',
+      '/json/goes/primary/xrays-6-hour.json',
       ctx,
       this.userAgent,
     );
@@ -883,6 +1117,61 @@ export class SpaceWeatherService {
         fluxWm2: r.flux,
         energy: r.energy,
       }));
+  }
+
+  /**
+   * Fetch discrete GOES X-ray flare events (rolling 7 days), oldest-first.
+   *
+   * Classes are read as published, not derived from the flux. Ordering is
+   * normalized here rather than depending on upstream's, the same as the solar-wind
+   * series: it makes oldest-first an invariant of the domain type instead of an
+   * accident of the feed.
+   */
+  async getXrayFlares(ctx: Context): Promise<XrayFlare[]> {
+    const raw = await fetchFeed<RawXrayFlare[]>(
+      '/json/goes/primary/xray-flares-7-day.json',
+      ctx,
+      this.userAgent,
+    );
+    return raw
+      .map((r) => ({
+        beginTime: normalizeSwpcTime(r.begin_time),
+        maxTime: normalizeSwpcTime(r.max_time),
+        endTime: r.end_time == null ? null : normalizeSwpcTime(r.end_time),
+        beginClass: r.begin_class,
+        maxClass: r.max_class,
+        endClass: r.end_class ?? null,
+        peakFluxWm2: r.max_xrlong,
+        satellite: r.satellite,
+      }))
+      .sort(byIsoAscending('beginTime'));
+  }
+
+  /**
+   * Fetch the latest daily F10.7 solar radio flux report, or null when the feed
+   * carries no Noon record.
+   *
+   * The newest record is not the answer: the feed serves three reports per UTC day
+   * and its index 0 is often that day's Afternoon report, while SWPC's own one-value
+   * summary product reports the Noon one — which is also the only schedule carrying
+   * `ninety_day_mean`. Selection is by time among the Noon records, so it does not
+   * depend on the order upstream serves.
+   */
+  async getF107(ctx: Context): Promise<F107Observation | null> {
+    const raw = await fetchFeed<RawF107[]>('/json/f107_cm_flux.json', ctx, this.userAgent);
+    const noonReports = raw
+      .filter((r) => r.reporting_schedule === 'Noon')
+      .map((r) => ({
+        observedTime: normalizeSwpcTime(r.time_tag),
+        fluxSfu: r.flux,
+        ninetyDayMeanSfu: parseNum(r.ninety_day_mean),
+        reportingSchedule: r.reporting_schedule,
+      }))
+      .sort(byIsoAscending('observedTime'));
+    // Sorted oldest-first, so the last element is the latest Noon report. Ordered by
+    // time rather than read off a position: the feed serves newest-first today, and
+    // its index 0 is usually that day's Morning or Afternoon report.
+    return noonReports.at(-1) ?? null;
   }
 
   /** Fetch active solar regions (most recent observed date only). */

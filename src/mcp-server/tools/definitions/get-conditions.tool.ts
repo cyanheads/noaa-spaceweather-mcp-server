@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
+import type { NoaaScaleEntry } from '@/services/space-weather/types.js';
 
 // ── Output sub-schemas ──────────────────────────────────────────────────────
 
@@ -19,14 +20,196 @@ const ScaleSummarySchema = z
   })
   .describe('Current level and label for one NOAA storm scale category.');
 
+/**
+ * SWPC issues no R or S *level* for a future day — it issues a probability. So the
+ * forecast entries carry a nullable scale alongside the probabilities, while `today`
+ * and `forecast[].G` keep {@link ScaleSummarySchema}: those do carry a real level.
+ * The R/S asymmetry is upstream's — two probabilities for R, one for S.
+ */
+const RadioForecastSchema = z
+  .object({
+    scale: z
+      .number()
+      .nullable()
+      .describe(
+        'R-scale level 0–5, or null — SWPC forecasts a radio-blackout probability for a future day rather than a level.',
+      ),
+    text: z
+      .string()
+      .nullable()
+      .describe('Human-readable R-scale descriptor, or null when no level was issued.'),
+    label: z
+      .string()
+      .nullable()
+      .describe('NOAA scale string, e.g. "R1", or null when no level was issued.'),
+    minorProbPercent: z
+      .number()
+      .nullable()
+      .describe(
+        'Probability (%) of an R1–R2 minor-to-moderate radio blackout on this day, or null when SWPC issued none.',
+      ),
+    majorProbPercent: z
+      .number()
+      .nullable()
+      .describe(
+        'Probability (%) of an R3 or greater strong radio blackout on this day, or null when SWPC issued none.',
+      ),
+  })
+  .describe('Forecast radio blackout outlook for one day — a level, a probability, or neither.');
+
+const RadiationForecastSchema = z
+  .object({
+    scale: z
+      .number()
+      .nullable()
+      .describe(
+        'S-scale level 0–5, or null — SWPC forecasts a radiation-storm probability for a future day rather than a level.',
+      ),
+    text: z
+      .string()
+      .nullable()
+      .describe('Human-readable S-scale descriptor, or null when no level was issued.'),
+    label: z
+      .string()
+      .nullable()
+      .describe('NOAA scale string, e.g. "S1", or null when no level was issued.'),
+    probPercent: z
+      .number()
+      .nullable()
+      .describe(
+        'Probability (%) of an S1 or greater solar radiation storm on this day, or null when SWPC issued none.',
+      ),
+  })
+  .describe(
+    'Forecast solar radiation storm outlook for one day — a level, a probability, or neither.',
+  );
+
 const ForecastPeriodSchema = z
   .object({
-    date: z.string().describe('Forecast date string.'),
-    G: ScaleSummarySchema.describe('Geomagnetic storm scale for this day.'),
-    R: ScaleSummarySchema.describe('Radio blackout scale for this day.'),
-    S: ScaleSummarySchema.describe('Solar radiation storm scale for this day.'),
+    date: z.string().describe('Forecast date string, e.g. "2026-06-04".'),
+    G: ScaleSummarySchema.describe('Geomagnetic storm scale forecast for this day.'),
+    R: RadioForecastSchema.describe('Radio blackout outlook for this day.'),
+    S: RadiationForecastSchema.describe('Solar radiation storm outlook for this day.'),
   })
-  .describe('3-day NOAA scale forecast for one calendar day.');
+  .describe('One day of the NOAA scale forecast series.');
+
+const DiscussionSchema = z
+  .object({
+    issued: z
+      .string()
+      .nullable()
+      .describe(
+        'ISO 8601 UTC time the discussion was issued, from the product\'s ":Issued:" line, e.g. "2026-06-04T12:30:00Z". Null when the product carries no such line.',
+      ),
+    sections: z
+      .array(
+        z
+          .object({
+            topic: z
+              .string()
+              .describe(
+                'Section heading, e.g. "Solar Activity", "Energetic Particle", "Solar Wind", "Geospace".',
+              ),
+            summary: z
+              .string()
+              .nullable()
+              .describe(
+                'Past-24 h summary text, or null when the section carries no ".24 hr Summary..." text.',
+              ),
+            forecast: z
+              .string()
+              .nullable()
+              .describe(
+                'Forecast text for the next 3 days, or null when the section carries no ".Forecast..." block.',
+              ),
+          })
+          .describe("One topic section of the discussion — its heading and the forecaster's text."),
+      )
+      .describe('One entry per topic section, in product order.'),
+  })
+  .describe(
+    "SWPC Forecast Discussion — the forecaster's narrative behind the storm scales. Null when include_discussion is false.",
+  );
+
+// ── Normalization helpers ───────────────────────────────────────────────────
+
+/** Join the present fragments of a phrase, so an absent descriptor leaves no gap. */
+function joinWords(words: (string | null | undefined)[]): string {
+  return words.filter((word): word is string => Boolean(word)).join(' ');
+}
+
+/**
+ * Map a level-carrying entry onto {@link ScaleSummarySchema}, which declares `scale` as
+ * a plain number: today's period and every forecast G entry do carry a real `Scale`
+ * upstream.
+ *
+ * A null one is not resolved to 0. That is the claim #23 removed from the forecast R/S
+ * — "level 0, no storm" is a different statement from "SWPC issued no level" — and it
+ * would read the same way here, on a surface with no probability to fall back to. The
+ * period instead reports the shape break it is, on the reason the tool already declares
+ * for a feed that answers without its documented shape.
+ */
+function observedScale(
+  entry: NoaaScaleEntry,
+  period: string,
+  fail: (message: string) => Error,
+): { label: string; scale: number; text: string } {
+  if (entry.scale === null)
+    throw fail(`SWPC scales feed issued no ${entry.category} level for the ${period} period.`);
+  return {
+    scale: entry.scale,
+    text: entry.text ?? '',
+    label: `${entry.category}${entry.scale}`,
+  };
+}
+
+/**
+ * Map the level half of a forecast R/S entry, preserving a null SWPC issued no level
+ * for. `label` is null in lockstep with `scale` — there is no "R" string to build
+ * without a number.
+ */
+function forecastLevel(entry: NoaaScaleEntry): {
+  label: string | null;
+  scale: number | null;
+  text: string | null;
+} {
+  return {
+    scale: entry.scale,
+    text: entry.text,
+    label: entry.scale === null ? null : `${entry.category}${entry.scale}`,
+  };
+}
+
+/**
+ * Render one forecast R/S cell for `format()`.
+ *
+ * The level and the probabilities render independently. Gating the probabilities on a
+ * null level would leave them unrendered for a schema-valid combination — a day with
+ * both — so a probability is shown whenever SWPC issued one. A day upstream issued
+ * neither a level nor a probability for reads "—" rather than claiming level 0.
+ */
+function forecastCell(
+  category: string,
+  entry: { label: string | null; scale: number | null; text: string | null },
+  probabilities: [percent: number | null, of: string][],
+): string {
+  const level = joinWords([
+    entry.scale === null ? entry.label : `${entry.label ?? category} (scale ${entry.scale})`,
+    // "none" alongside an explicit level 0 adds nothing.
+    entry.text && entry.text.toLowerCase() !== 'none' ? entry.text : null,
+  ]);
+  const chances = probabilities
+    .filter((probability): probability is [number, string] => probability[0] !== null)
+    .map(([percent, of]) => `${percent}% ${of}`)
+    .join(', ');
+  return `${category}: ${[level, chances].filter(Boolean).join(' · ') || '—'}`;
+}
+
+/** The "G2 moderate geomagnetic storm" fragment for an in-progress storm, else null. */
+function stormPhrase(entry: NoaaScaleEntry, phenomenon: string): string | null {
+  if (entry.scale === null || entry.scale < 1) return null;
+  return joinWords([`${entry.category}${entry.scale}`, entry.text?.toLowerCase(), phenomenon]);
+}
 
 // ── Tool ────────────────────────────────────────────────────────────────────
 
@@ -35,16 +218,24 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
   description:
     'Current space-weather snapshot: NOAA R/S/G storm scales (today + 3-day forecast), latest Kp ' +
     'index with its G-scale equivalent and aurora-visibility latitude, and a plain-language status ' +
-    'summary. The quickest way to answer "is anything happening right now?" — use before deciding ' +
+    'summary. Optionally includes the SWPC forecast discussion explaining what is driving the ' +
+    'forecast. The quickest way to answer "is anything happening right now?" — use before deciding ' +
     'whether to drill into solar wind (noaa_spaceweather_get_solar_wind), aurora ' +
     '(noaa_spaceweather_get_aurora_forecast), or alert details (noaa_spaceweather_get_alerts).',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
-  input: z.object({}),
+  input: z.object({
+    include_discussion: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Also fetch SWPC's forecaster-written Forecast Discussion, which explains why the forecast looks the way it does (CME versus coronal-hole stream, expected arrival). Costs one extra upstream request.",
+      ),
+  }),
   output: z.object({
     observedAt: z
       .string()
       .describe(
-        'UTC date and time of the NOAA scales data period this snapshot reflects, e.g. "2026-06-04 15:00:00".',
+        'ISO 8601 UTC date and time of the NOAA scales data period this snapshot reflects, e.g. "2026-06-04T15:00:00Z".',
       ),
     currentKp: z.number().describe('Latest observed planetary K-index (0–9).'),
     currentGScale: z.number().describe('NOAA G-scale equivalent for current Kp (0–5).'),
@@ -60,12 +251,19 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
         S: ScaleSummarySchema.describe("Today's solar radiation storm scale."),
       })
       .describe('Current observed NOAA storm scales for today.'),
-    forecast: z.array(ForecastPeriodSchema).describe('3-day NOAA scale forecast (next 1–3 days).'),
+    forecast: z
+      .array(ForecastPeriodSchema)
+      .describe(
+        "SWPC's 3-day NOAA scale forecast, oldest first. The series starts with today — the same calendar day as observedAt — and covers the next two days.",
+      ),
     summary: z
       .string()
       .describe(
         'Plain-language status summary suitable for display, e.g. "Quiet conditions" or "G2 moderate geomagnetic storm in progress."',
       ),
+    discussion: DiscussionSchema.nullable().describe(
+      'SWPC Forecast Discussion when include_discussion is true, otherwise null.',
+    ),
   }),
 
   errors: [
@@ -79,18 +277,24 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
     {
       reason: 'feed_moved',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SWPC feed path returns a permanent 4xx (404, 410, 401, 403), or the scales feed no longer carries its "0" (today) period. Fails in one attempt.',
+      when: 'SWPC feed path returns a permanent 4xx (404, 410, 401, 403), or a feed answers without the shape it is documented to have — the scales feed no longer carrying its "0" (today) period, or the forecast discussion carrying no topic section. Fails in one attempt.',
       retryable: false,
       recovery:
         'Retrying will not help — the SWPC feed path no longer resolves or no longer has the expected shape; the feed URL needs updating against SWPC current inventory.',
     },
   ],
 
-  async handler(_input, ctx) {
-    ctx.log.info('Fetching current space weather conditions');
+  async handler(input, ctx) {
+    ctx.log.info('Fetching current space weather conditions', {
+      includeDiscussion: input.include_discussion,
+    });
     const svc = getSpaceWeatherService();
 
-    const [scales, kpObs] = await Promise.all([svc.getNoaaScales(ctx), svc.getKpObserved(ctx)]);
+    const [scales, kpObs, discussion] = await Promise.all([
+      svc.getNoaaScales(ctx),
+      svc.getKpObserved(ctx),
+      input.include_discussion ? svc.getForecastDiscussion(ctx) : null,
+    ]);
 
     // Latest Kp is the last element of the observed array
     const latestKp = kpObs.length > 0 ? kpObs[kpObs.length - 1] : null;
@@ -102,13 +306,11 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
     const today = scales.today;
 
     // Build summary — incorporate both current conditions and notable forecast activity.
-    const parts: string[] = [];
-    if (today.G.scale >= 1)
-      parts.push(`G${today.G.scale} ${today.G.text.toLowerCase()} geomagnetic storm`);
-    if (today.R.scale >= 1)
-      parts.push(`R${today.R.scale} ${today.R.text.toLowerCase()} radio blackout`);
-    if (today.S.scale >= 1)
-      parts.push(`S${today.S.scale} ${today.S.text.toLowerCase()} solar radiation storm`);
+    const parts = [
+      stormPhrase(today.G, 'geomagnetic storm'),
+      stormPhrase(today.R, 'radio blackout'),
+      stormPhrase(today.S, 'solar radiation storm'),
+    ].filter((phrase): phrase is string => phrase !== null);
 
     let summary: string;
     if (parts.length > 0) {
@@ -116,38 +318,53 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
         parts.map((p, i) => (i === 0 ? p.charAt(0).toUpperCase() + p.slice(1) : p)).join('; ') +
         ' in progress.';
     } else {
-      // Check forecast for upcoming elevated activity — pick the highest G-scale day.
-      let peakScale = 0;
-      let peakDate = '';
+      // Check the forecast for upcoming elevated activity — the highest G-scale day.
+      // The descriptor rides along with the peak instead of being looked up by date
+      // afterwards: the series opens on today, so a date does not identify a period.
+      let peak: { date: string; scale: number; text: string | null } | null = null;
       for (const p of scales.forecast) {
-        if (p.G.scale > peakScale) {
-          peakScale = p.G.scale;
-          peakDate = p.date;
+        if (p.G.scale !== null && p.G.scale > (peak?.scale ?? 0)) {
+          peak = { date: p.date, scale: p.G.scale, text: p.G.text };
         }
       }
+      // The series starts with today, so naming its date would read as a future day.
+      const when = peak === null || peak.date === today.date ? 'today' : peak.date;
       summary =
-        peakScale >= 1
-          ? `Quiet now — G${peakScale} ${scales.forecast.find((p) => p.date === peakDate)?.G.text.toLowerCase()} geomagnetic storm forecast for ${peakDate}.`
-          : 'Quiet conditions — no significant storms active.';
+        peak === null
+          ? 'Quiet conditions — no significant storms active.'
+          : `Quiet now — ${joinWords([`G${peak.scale}`, peak.text?.toLowerCase(), 'geomagnetic storm'])} forecast for ${when}.`;
     }
 
+    /** A missing level is a feed shape break — see {@link observedScale}. */
+    const failOnMissingLevel = (message: string) =>
+      ctx.fail('feed_moved', message, ctx.recoveryFor('feed_moved'));
+
     return {
-      observedAt: `${today.date} ${today.time}`,
+      observedAt: today.observedAt,
       currentKp,
       currentGScale,
       auroraLatitude,
       today: {
-        G: { scale: today.G.scale, text: today.G.text, label: `G${today.G.scale}` },
-        R: { scale: today.R.scale, text: today.R.text, label: `R${today.R.scale}` },
-        S: { scale: today.S.scale, text: today.S.text, label: `S${today.S.scale}` },
+        G: observedScale(today.G, 'today', failOnMissingLevel),
+        R: observedScale(today.R, 'today', failOnMissingLevel),
+        S: observedScale(today.S, 'today', failOnMissingLevel),
       },
       forecast: scales.forecast.map((p) => ({
         date: p.date,
-        G: { scale: p.G.scale, text: p.G.text, label: `G${p.G.scale}` },
-        R: { scale: p.R.scale, text: p.R.text, label: `R${p.R.scale}` },
-        S: { scale: p.S.scale, text: p.S.text, label: `S${p.S.scale}` },
+        G: observedScale(p.G, `${p.date} forecast`, failOnMissingLevel),
+        R: {
+          ...forecastLevel(p.R),
+          minorProbPercent: p.R.minorProb,
+          majorProbPercent: p.R.majorProb,
+        },
+        S: {
+          ...forecastLevel(p.S),
+          // SWPC gives S a single "Prob"; the service parks it in minorProb.
+          probPercent: p.S.minorProb,
+        },
       })),
       summary,
+      discussion,
     };
   },
 
@@ -176,11 +393,33 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
     );
     if (result.forecast.length > 0) {
       lines.push('');
-      lines.push('### 3-Day Forecast');
+      lines.push('### 3-Day Forecast (starts today)');
       for (const day of result.forecast) {
-        lines.push(
-          `**${day.date}:** ${day.G.label} (scale ${day.G.scale}) ${scaleText(day.G.text)} | ${day.R.label} (scale ${day.R.scale}) ${scaleText(day.R.text)} | ${day.S.label} (scale ${day.S.scale}) ${scaleText(day.S.text)}`,
-        );
+        const cells = [
+          `${day.G.label} (scale ${day.G.scale}) ${scaleText(day.G.text)}`,
+          forecastCell('R', day.R, [
+            [day.R.minorProbPercent, 'R1–R2'],
+            [day.R.majorProbPercent, 'R3+'],
+          ]),
+          forecastCell('S', day.S, [[day.S.probPercent, 'S1+']]),
+        ];
+        lines.push(`**${day.date}:** ${cells.join(' | ')}`);
+      }
+    }
+    if (result.discussion) {
+      lines.push('');
+      lines.push('### SWPC Forecast Discussion');
+      lines.push(
+        result.discussion.issued === null
+          ? '_Issue time not stated in the product._'
+          : `_Issued ${result.discussion.issued}_`,
+      );
+      for (const section of result.discussion.sections) {
+        lines.push('');
+        lines.push(`**${section.topic}**`);
+        if (section.summary) lines.push(`_Past 24 h:_ ${section.summary}`);
+        if (section.forecast) lines.push(`_Forecast:_ ${section.forecast}`);
+        if (!section.summary && !section.forecast) lines.push('_No text in this section._');
       }
     }
     return [{ type: 'text', text: lines.join('\n') }];

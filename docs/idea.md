@@ -55,8 +55,10 @@ SWPC publishes keyless JSON at `services.swpc.noaa.gov`. Feeds are heterogeneous
 | Storm scales (R/S/G) | `/products/noaa-scales/...` | current + forecast scale levels |
 | Planetary K-index | `/products/noaa-planetary-k-index.json` | array-of-arrays, time-tagged Kp |
 | Aurora forecast (OVATION) | `/json/ovation_aurora_latest.json` | lat/lon/probability grid + viewline |
-| Solar wind (DSCOVR/ACE) | `/products/solar-wind/{plasma,mag}-1-day.json` | header-row arrays: speed, density, Bz |
-| Solar X-ray flux (GOES) | `/json/goes/primary/xrays-1-day.json` | array of objects; flare class |
+| Solar wind (RTSW, active L1 spacecraft) | `/json/rtsw/rtsw_wind_1m.json`, `/json/rtsw/rtsw_mag_1m.json` | arrays of objects, newest-first, every reporting spacecraft interleaved: speed, density, Bz |
+| Solar X-ray flux (GOES) | `/json/goes/primary/xrays-6-hour.json` | array of objects, both energy channels interleaved; flux the flare class derives from |
+| Solar X-ray flares (GOES) | `/json/goes/primary/xray-flares-7-day.json` | array of objects, one per discrete flare event; classes published with magnitude |
+| F10.7 cm radio flux | `/json/f107_cm_flux.json` | array of objects, newest-first, three reports per UTC day |
 | Alerts/watches/warnings | `/products/alerts.json` | array of message objects |
 
 ## Tool Surface (sketch)
@@ -77,8 +79,10 @@ noaa_spaceweather_get_aurora_forecast — OVATION aurora model: where the aurora
     visible now and in the next ~30–60 min. Optional coordinates → local visibility
     probability and whether the viewline reaches that latitude. The consumer favorite.
 
-noaa_spaceweather_get_solar_wind — real-time solar wind from DSCOVR/ACE: speed, density,
-    temperature, and the all-important Bz (southward IMF drives storms). Recent series.
+noaa_spaceweather_get_solar_wind — real-time solar wind from the L1 spacecraft SWPC
+    flags active in its RTSW feeds: speed, density, temperature, and the all-important
+    Bz (southward IMF drives storms). Recent series, each record naming the spacecraft
+    that reported it.
 
 noaa_spaceweather_get_solar_activity — solar flares (GOES X-ray flux + recent flare
     events, class M/X), proton/radiation-storm levels, sunspot number, F10.7 flux,

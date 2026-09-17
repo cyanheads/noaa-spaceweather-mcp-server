@@ -5,26 +5,51 @@
 
 // ── NOAA Scale types ───────────────────────────────────────────────────────
 
-/** A single NOAA storm scale entry (R, S, or G) for one forecast period. */
+/**
+ * A single NOAA storm scale entry (R, S, or G) for one period.
+ *
+ * `scale`/`text` and the two probability fields are alternatives, not companions:
+ * SWPC issues a *level* for a period it has observed and a *probability* for one it
+ * is forecasting. Today's period carries R/S/G levels with null probabilities; a
+ * forecast period carries a G level but only probabilities for R and S, with
+ * `scale`/`text` null. A null `scale` therefore means "upstream issues no level for
+ * this period", which is a different claim from level 0 — never resolve one to the
+ * other (#23).
+ */
 export interface NoaaScaleEntry {
   /** Storm scale category: R (radio blackout), S (solar radiation), G (geomagnetic). */
   category: 'R' | 'S' | 'G';
-  /** Probability of a major event (%), or null when not applicable. */
+  /**
+   * Probability of a major event (%), or null when upstream issued none. R only —
+   * SWPC's `MajorProb`, the chance of R3 or greater.
+   */
   majorProb: number | null;
-  /** Probability of a minor event (%), or null when not applicable. */
+  /**
+   * Probability of a minor event (%), or null when upstream issued none. Carries
+   * SWPC's `MinorProb` for R (R1–R2) and its single `Prob` for S (S1 or greater)
+   * and G.
+   */
   minorProb: number | null;
-  /** Storm scale level 0–5. */
-  scale: number;
-  /** Human-readable descriptor, e.g. "Moderate". Empty string when scale is 0. */
-  text: string;
+  /** Storm scale level 0–5, or null when upstream issues no level for this period. */
+  scale: number | null;
+  /**
+   * Human-readable descriptor, e.g. "moderate"; SWPC's literal "none" at level 0.
+   * Null when upstream issues no level for this period.
+   */
+  text: string | null;
 }
 
-/** NOAA storm scales for one forecast period. */
+/** NOAA storm scales for one period. */
 export interface NoaaScalesPeriod {
   /** Date string for this period, e.g. "2026-06-04". */
   date: string;
   /** Geomagnetic storm scale (G). */
   G: NoaaScaleEntry;
+  /**
+   * The period's `date` and `time` as one explicit ISO 8601 UTC instant, e.g.
+   * "2026-06-04T15:00:00Z". Empty string when the feed omits either half.
+   */
+  observedAt: string;
   /** Radio blackout scale (R). */
   R: NoaaScaleEntry;
   /** Solar radiation storm scale (S). */
@@ -35,10 +60,49 @@ export interface NoaaScalesPeriod {
 
 /** All NOAA storm scale periods from the feed. */
 export interface NoaaScalesData {
-  /** 3-day forecast array (keys "1", "2", "3"). */
+  /**
+   * SWPC's 3-day forecast (keys "1", "2", "3"), oldest first. The series opens on
+   * today — key "1" repeats key "0"'s `DateStamp` — and runs through the next two
+   * UTC days.
+   */
   forecast: NoaaScalesPeriod[];
   /** Today's observed/current values (key "0"). */
   today: NoaaScalesPeriod;
+}
+
+// ── Forecast Discussion types ──────────────────────────────────────────────
+
+/** One topic section of the SWPC Forecast Discussion product. */
+export interface ForecastDiscussionSection {
+  /**
+   * Forecast text for the next three days, from the section's ".Forecast..." block.
+   * Null when the section carries no such block.
+   */
+  forecast: string | null;
+  /**
+   * Past-24-hour summary, from the section's ".24 hr Summary..." block. Null when
+   * the block carries no text.
+   */
+  summary: string | null;
+  /** Section heading, e.g. "Solar Activity", "Geospace". */
+  topic: string;
+}
+
+/**
+ * The SWPC Forecast Discussion — the forecaster-written narrative behind the storm
+ * scales. Parsed from the `/text/discussion.txt` product.
+ */
+export interface ForecastDiscussion {
+  /**
+   * Issue time as ISO 8601 UTC, from the product's ":Issued:" line. Falls back to
+   * that line's raw text when it does not match the SWPC datetime shape, and is null
+   * when the product carries no such line at all — a body with topic sections but no
+   * issue line still parses, and there is nothing to derive a time from. HTTP
+   * `Last-Modified` is not issuance time and is never read for this.
+   */
+  issued: string | null;
+  /** One entry per topic section, in product order. */
+  sections: ForecastDiscussionSection[];
 }
 
 // ── Kp index types ─────────────────────────────────────────────────────────
@@ -154,6 +218,58 @@ export interface XrayFlux {
   satellite: number;
   /** ISO 8601 time tag. */
   timeTag: string;
+}
+
+/**
+ * One discrete GOES X-ray flare event.
+ *
+ * Every class is read from the feed, never derived: SWPC publishes `begin_class`,
+ * `max_class`, and `end_class` with their magnitudes already stated. The record is
+ * published at onset — `time_tag` equals `begin_time` on every record — so a flare
+ * still in progress has no decay time or class yet and both read null.
+ *
+ * The feed's `max_ratio` / `max_ratio_time` are not mapped, and neither is
+ * `current_int_xrlong`: it is an *integrated* flux running about four decades above
+ * the peak, so reading it as a peak or a class would misreport the flare by orders
+ * of magnitude.
+ */
+export interface XrayFlare {
+  /** GOES class with magnitude at onset, e.g. "B4.2". */
+  beginClass: string;
+  /** ISO 8601 UTC onset time. */
+  beginTime: string;
+  /** GOES class with magnitude at decay; null while the flare is still in progress. */
+  endClass: string | null;
+  /** ISO 8601 UTC decay time; null while the flare is still in progress. */
+  endTime: string | null;
+  /** Peak GOES class with magnitude, e.g. "M5.2" — SWPC's `max_class`, as published. */
+  maxClass: string;
+  /** ISO 8601 UTC time of peak flux. */
+  maxTime: string;
+  /** Peak long-channel (0.1–0.8 nm) flux in W/m² — SWPC's `max_xrlong`. */
+  peakFluxWm2: number;
+  /** GOES satellite number the record came from. */
+  satellite: number;
+}
+
+/**
+ * One daily F10.7 solar radio flux report, measured at 2800 MHz by the Penticton
+ * Radio Observatory (NRC Canada).
+ *
+ * The feed carries three reports per UTC day (Morning, Noon, Afternoon) and only
+ * the Noon record carries a 90-day mean — it is also the value SWPC's own one-value
+ * summary product reports for the day. The observation can be up to ~24 h old, so
+ * `observedTime` rides with the value rather than being read as "now".
+ */
+export interface F107Observation {
+  /** 10.7 cm solar radio flux in solar flux units (sfu). */
+  fluxSfu: number;
+  /** 90-day mean flux in sfu; null when the selected record carries none. */
+  ninetyDayMeanSfu: number | null;
+  /** ISO 8601 UTC observation time, normalized from the feed's Z-less tag. */
+  observedTime: string;
+  /** Which of the three daily reports this is: "Morning", "Noon", or "Afternoon". */
+  reportingSchedule: string;
 }
 
 /**

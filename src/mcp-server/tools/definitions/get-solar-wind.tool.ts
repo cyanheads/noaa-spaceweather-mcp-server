@@ -7,6 +7,59 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
+import type { SolarWindMag, SolarWindPlasma } from '@/services/space-weather/types.js';
+
+/**
+ * Records each series is bounded to at the default `reduced` resolution. Pinned at
+ * 200 so a default 3-hour call — roughly 170 records per series at the feed's
+ * 1-minute cadence — stays inside the bound and is returned untouched.
+ */
+const REDUCED_SERIES_MAX = 200;
+
+/**
+ * Bound a series to {@link REDUCED_SERIES_MAX} records by bucketing it by record
+ * count and emitting the one record `pick` selects from each bucket — a real
+ * upstream measurement, never a synthesized average, so an excursion shorter than
+ * a bucket survives instead of being stepped over by a stride.
+ *
+ * The newest record rides the tail unbucketed: `series.at(-1)` is what the
+ * matching `latest*` field reports, and a caller reading the tail for "current"
+ * would otherwise get a stale value. A series already inside the bound is
+ * returned as-is with a bucket size of one record.
+ */
+function reduceSeries<T>(
+  records: readonly T[],
+  pick: (bucket: readonly T[]) => T,
+): { emitted: readonly T[]; bucketRecords: number } {
+  if (records.length <= REDUCED_SERIES_MAX) return { emitted: records, bucketRecords: 1 };
+
+  const older = records.slice(0, -1);
+  const bucketRecords = Math.ceil(older.length / (REDUCED_SERIES_MAX - 1));
+  const emitted: T[] = [];
+  for (let i = 0; i < older.length; i += bucketRecords) {
+    emitted.push(pick(older.slice(i, i + bucketRecords)));
+  }
+  emitted.push(...records.slice(-1));
+  return { emitted, bucketRecords };
+}
+
+/**
+ * The bucket's most southward Bz — the storm-relevant extreme. A bucket whose
+ * every reading is null keeps its oldest record, so the emitted series stays a
+ * sequence of real measurements rather than dropping the interval.
+ */
+const mostSouthwardBz = (bucket: readonly SolarWindMag[]): SolarWindMag =>
+  bucket.reduce((best, record) =>
+    record.bzGsm !== null && (best.bzGsm === null || record.bzGsm < best.bzGsm) ? record : best,
+  );
+
+/** The bucket's fastest solar wind speed — the plasma counterpart of {@link mostSouthwardBz}. */
+const fastestSpeed = (bucket: readonly SolarWindPlasma[]): SolarWindPlasma =>
+  bucket.reduce((best, record) =>
+    record.speedKmS !== null && (best.speedKmS === null || record.speedKmS > best.speedKmS)
+      ? record
+      : best,
+  );
 
 const PlasmaSchema = z
   .object({
@@ -62,7 +115,8 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     'Real-time solar wind measurements from the active spacecraft at L1: proton speed (km/s), ' +
     'density (n/cm³), temperature (K), and the critical Bz component (southward Bz = negative = ' +
     'storm driver). Returns the recent plasma and magnetic field time series within the requested ' +
-    'window, oldest first, each record tagged with the reporting spacecraft. ' +
+    'window, oldest first, each record tagged with the reporting spacecraft and bounded to 200 ' +
+    'records per series unless resolution is set to "full". ' +
     'Bz < −10 nT for sustained periods is a primary geomagnetic storm trigger — use alongside ' +
     'noaa_spaceweather_get_kp_index to see whether elevated solar wind has translated into a ' +
     'geomagnetic storm.',
@@ -77,19 +131,36 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       .describe(
         'Hours of recent solar wind history to return (1–168, default 3). Records update ~every 1 ' +
           'min, but the feed only carries roughly the last 24 hours — a larger window returns the ' +
-          'whole feed, not more history. When a window comes back empty, feedStalenessHours and ' +
-          'latestFeedPlasmaTime/latestFeedMagTime report how current the feed actually is.',
+          'whole feed, not more history, and at the default resolution the returned series stay ' +
+          'bounded to 200 records each rather than growing with the window. When a window comes ' +
+          'back empty, feedStalenessHours and latestFeedPlasmaTime/latestFeedMagTime report how ' +
+          'current the feed actually is.',
+      ),
+    resolution: z
+      .enum(['reduced', 'full'])
+      .default('reduced')
+      .describe(
+        'Detail level of the returned plasma and mag series. "reduced" (default) bounds each ' +
+          'series to at most 200 records: the window is bucketed by record count and one real ' +
+          "measurement is emitted per bucket — the bucket's fastest speed for plasma, its most " +
+          'southward Bz for mag — with the newest record in the window always last. A series ' +
+          'already inside the bound is returned untouched, so a default 3-hour call is ' +
+          'unaffected. "full" returns every record in the window (~1,400 per series over 24 ' +
+          'hours, a ~540 KB response). bzStatus, bzMinInWindow, latestPlasma, and latestMag are ' +
+          'computed from the full window either way.',
       ),
   }),
   output: z.object({
     plasma: z
       .array(PlasmaSchema)
       .describe(
-        'Plasma measurements (speed, density, temperature) within the window, oldest first.',
+        'Plasma measurements (speed, density, temperature) within the window, oldest first. Under resolution="reduced" this is at most 200 real records — one per equal-size bucket of the window, each the bucket\'s fastest speed — with the newest windowed record last.',
       ),
     mag: z
       .array(MagSchema)
-      .describe('Magnetic field measurements (Bx, By, Bz, Bt) within the window, oldest first.'),
+      .describe(
+        'Magnetic field measurements (Bx, By, Bz, Bt) within the window, oldest first. Under resolution="reduced" this is at most 200 real records — one per equal-size bucket of the window, each the bucket\'s most southward Bz — with the newest windowed record last, so the final element always equals latestMag.',
+      ),
     latestPlasma: PlasmaSchema.nullable().describe(
       'Most recent plasma reading, null if no data in window.',
     ),
@@ -103,11 +174,25 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       ),
     plasmaCount: z
       .number()
-      .describe('Number of plasma records in the plasma array, spanning the requested window.'),
+      .describe(
+        'Number of plasma records in the plasma array. Equal to the records in the window at full resolution; under a reduction it is the emitted count, and plasmaWindowRecords carries the pre-reduction total.',
+      ),
     magCount: z
       .number()
       .describe(
-        'Number of magnetic field records in the mag array, spanning the requested window.',
+        'Number of magnetic field records in the mag array. Equal to the records in the window at full resolution; under a reduction it is the emitted count, and magWindowRecords carries the pre-reduction total.',
+      ),
+    bzMinInWindow: z
+      .number()
+      .nullable()
+      .describe(
+        'Lowest (most southward) Bz reading in nT across the whole window, computed before any reduction — the number storm work reads next to the latest value. Null when the window is empty or every bzGsm in it is null.',
+      ),
+    bzMinTimeTag: z
+      .string()
+      .nullable()
+      .describe(
+        'ISO 8601 time tag of the record that carried bzMinInWindow. Null whenever bzMinInWindow is null.',
       ),
     latestFeedPlasmaTime: z
       .string()
@@ -134,7 +219,31 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       .string()
       .optional()
       .describe(
-        'Guidance when the requested window returned no plasma or magnetic field records — names the newest record the feed carries, or reports that the feed itself returned nothing from an active spacecraft.',
+        'Guidance on what shaped this response: that the requested window returned no plasma or magnetic field records — naming the newest record the feed carries, or reporting that the feed itself returned nothing from an active spacecraft — and that a series was bounded to 200 records, with the per-series factors.',
+      ),
+    plasmaBucketRecords: z
+      .number()
+      .optional()
+      .describe(
+        'Plasma records per emitted record — the bucket size the window was reduced by, or 1 when this series was returned untouched. Records rather than a minute cadence: the feed skips minutes, so a bucket spans a variable stretch of wall-clock time. Present only when a reduction was applied to either series.',
+      ),
+    plasmaWindowRecords: z
+      .number()
+      .optional()
+      .describe(
+        'Plasma records the window held before reduction. Present only when a reduction was applied to either series.',
+      ),
+    magBucketRecords: z
+      .number()
+      .optional()
+      .describe(
+        'Magnetic field records per emitted record — the bucket size the window was reduced by, or 1 when this series was returned untouched. The two series differ in length, so each carries its own factor. Present only when a reduction was applied to either series.',
+      ),
+    magWindowRecords: z
+      .number()
+      .optional()
+      .describe(
+        'Magnetic field records the window held before reduction. Present only when a reduction was applied to either series.',
       ),
   },
 
@@ -157,7 +266,10 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
   ],
 
   async handler(input, ctx) {
-    ctx.log.info('Fetching solar wind data', { window_hours: input.window_hours });
+    ctx.log.info('Fetching solar wind data', {
+      window_hours: input.window_hours,
+      resolution: input.resolution,
+    });
     const svc = getSpaceWeatherService();
     const [allPlasma, allMag] = await Promise.all([
       svc.getSolarWindPlasma(ctx),
@@ -200,13 +312,6 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
         : `The feed returned no ${label} readings from an active spacecraft.`;
     };
 
-    const notices = [
-      emptyWindowNotice('plasma', plasma.length, latestFeedPlasmaTime),
-      emptyWindowNotice('magnetic field', mag.length, latestFeedMagTime),
-    ].filter((n): n is string => n !== null);
-    // One call — the notice field is last-wins, so a second call would clobber the first.
-    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
-
     // Derive Bz status
     let bzStatus = 'Bz data unavailable.';
     if (latestMag?.bzGsm != null) {
@@ -217,15 +322,63 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       else bzStatus = `Northward Bz +${bz} nT — quiescent, not storm-driving.`;
     }
 
+    // Read from the full windowed series, before any reduction: the whole point of
+    // the field is that it survives a reduction that emits neither neighbour.
+    let bzMinInWindow: number | null = null;
+    let bzMinTimeTag: string | null = null;
+    for (const record of mag) {
+      if (record.bzGsm !== null && (bzMinInWindow === null || record.bzGsm < bzMinInWindow)) {
+        bzMinInWindow = record.bzGsm;
+        bzMinTimeTag = record.timeTag;
+      }
+    }
+
+    const plasmaReduction =
+      input.resolution === 'reduced'
+        ? reduceSeries(plasma, fastestSpeed)
+        : { emitted: plasma, bucketRecords: 1 };
+    const magReduction =
+      input.resolution === 'reduced'
+        ? reduceSeries(mag, mostSouthwardBz)
+        : { emitted: mag, bucketRecords: 1 };
+    const reducedSeries = [
+      plasmaReduction.bucketRecords > 1
+        ? `plasma ${plasma.length} → ${plasmaReduction.emitted.length} records (one per ${plasmaReduction.bucketRecords})`
+        : null,
+      magReduction.bucketRecords > 1
+        ? `magnetic field ${mag.length} → ${magReduction.emitted.length} records (one per ${magReduction.bucketRecords})`
+        : null,
+    ].filter((n): n is string => n !== null);
+
+    const notices = [
+      emptyWindowNotice('plasma', plasma.length, latestFeedPlasmaTime),
+      emptyWindowNotice('magnetic field', mag.length, latestFeedMagTime),
+      reducedSeries.length > 0
+        ? `Series bounded to ${REDUCED_SERIES_MAX} records each at resolution="reduced" — ${reducedSeries.join(', ')}. Every emitted record is a real measurement (its bucket's fastest speed or most southward Bz) and the newest record in the window is last; bzStatus, bzMinInWindow, latestPlasma, and latestMag come from the full window. Pass resolution="full" for every record.`
+        : null,
+    ].filter((n): n is string => n !== null);
+    // One call — the notice field is last-wins, so a second call would clobber the first.
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
+    // Written separately rather than spread in conditionally: enrich accumulates, and
+    // an absent field must stay absent rather than arrive as an explicit undefined.
+    if (reducedSeries.length > 0) {
+      ctx.enrich({
+        plasmaBucketRecords: plasmaReduction.bucketRecords,
+        plasmaWindowRecords: plasma.length,
+        magBucketRecords: magReduction.bucketRecords,
+        magWindowRecords: mag.length,
+      });
+    }
+
     return {
-      plasma: plasma.map((r) => ({
+      plasma: plasmaReduction.emitted.map((r) => ({
         timeTag: r.timeTag,
         source: r.source,
         densityPerCm3: r.densityPerCm3,
         speedKmS: r.speedKmS,
         temperatureK: r.temperatureK,
       })),
-      mag: mag.map((r) => ({
+      mag: magReduction.emitted.map((r) => ({
         timeTag: r.timeTag,
         source: r.source,
         bxGsm: r.bxGsm,
@@ -253,11 +406,13 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
           }
         : null,
       bzStatus,
-      plasmaCount: plasma.length,
-      magCount: mag.length,
+      plasmaCount: plasmaReduction.emitted.length,
+      magCount: magReduction.emitted.length,
       latestFeedPlasmaTime,
       latestFeedMagTime,
       feedStalenessHours,
+      bzMinInWindow,
+      bzMinTimeTag,
     };
   },
 
@@ -266,6 +421,13 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     const source = result.latestPlasma?.source ?? result.latestMag?.source;
     lines.push(source ? `## Solar Wind (${source})` : '## Solar Wind');
     lines.push(`**Bz Status:** ${result.bzStatus}`);
+    lines.push(
+      `**Minimum Bz in window:** ${
+        result.bzMinInWindow != null && result.bzMinTimeTag != null
+          ? `${result.bzMinInWindow} nT at ${result.bzMinTimeTag}`
+          : 'N/A'
+      }`,
+    );
     lines.push(`**Plasma readings:** ${result.plasmaCount} | **Mag readings:** ${result.magCount}`);
 
     if (result.latestFeedPlasmaTime != null) {

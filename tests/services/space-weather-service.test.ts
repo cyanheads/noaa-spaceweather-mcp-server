@@ -15,6 +15,8 @@ vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
 
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
 import { kpToGScale, SpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
+import { SWPC_DISCUSSION } from '../fixtures/swpc-discussion.js';
+import { SWPC_F107_FEED, SWPC_XRAY_FLARE_FEED } from '../fixtures/swpc-xray-flares.js';
 
 const mockFetch = vi.mocked(fetchWithTimeout);
 
@@ -940,6 +942,256 @@ describe('SpaceWeatherService.getSolarWindMag (RTSW)', () => {
   });
 });
 
+describe('SpaceWeatherService.getXrayFlux', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  /**
+   * Characterization of the mapping, written against the 7-day feed it read before
+   * the 6-hour swap: the two feeds are byte-identical per record, so every assertion
+   * here must hold unchanged after the path moves. Only the requested URL changes.
+   */
+  it('keeps only the long channel, maps each field verbatim, and preserves feed order', async () => {
+    // Verbatim records from the GOES primary X-ray feed, both energy channels
+    // interleaved at the same time tags, as upstream serves them.
+    const raw = [
+      {
+        time_tag: '2026-09-17T17:08:00Z',
+        satellite: 18,
+        flux: 2.2630203488915868e-8,
+        observed_flux: 2.2630203488915868e-8,
+        electron_correction: 0,
+        electron_contaminaton: false,
+        energy: '0.05-0.4nm',
+      },
+      {
+        time_tag: '2026-09-17T17:08:00Z',
+        satellite: 18,
+        flux: 2.4466430659231264e-7,
+        observed_flux: 2.841615867055225e-7,
+        electron_correction: 3.949726234964146e-8,
+        electron_contaminaton: false,
+        energy: '0.1-0.8nm',
+      },
+      {
+        time_tag: '2026-09-17T17:09:00Z',
+        satellite: 18,
+        flux: 2.5e-7,
+        observed_flux: 2.9e-7,
+        electron_correction: 4e-8,
+        electron_contaminaton: false,
+        energy: '0.1-0.8nm',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(raw));
+
+    const xray = await makeService().getXrayFlux(createMockContext() as never);
+
+    expect(xray).toEqual([
+      {
+        timeTag: '2026-09-17T17:08:00Z',
+        satellite: 18,
+        fluxWm2: 2.4466430659231264e-7,
+        energy: '0.1-0.8nm',
+      },
+      {
+        timeTag: '2026-09-17T17:09:00Z',
+        satellite: 18,
+        fluxWm2: 2.5e-7,
+        energy: '0.1-0.8nm',
+      },
+    ]);
+  });
+
+  it('returns an empty series when the feed carries no long-channel record', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse([
+        { time_tag: '2026-09-17T17:08:00Z', satellite: 18, flux: 1e-8, energy: '0.05-0.4nm' },
+      ]),
+    );
+
+    expect(await makeService().getXrayFlux(createMockContext() as never)).toEqual([]);
+  });
+
+  it('reads the 6-hour feed, not the 7-day one', async () => {
+    // The tool slices the past hour from this series, and the 6-hour feed's records
+    // are byte-identical to the newest 710 of the 7-day feed — same channels, same
+    // 1-minute cadence, same newest timestamp — for ~4.36 MB less per call.
+    mockFetch.mockResolvedValue(makeResponse([]));
+
+    await makeService().getXrayFlux(createMockContext() as never);
+
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
+      'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
+    );
+  });
+});
+
+describe('SpaceWeatherService.getXrayFlares (#31)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('requests the 7-day flare feed', async () => {
+    mockFetch.mockResolvedValue(makeResponse([]));
+
+    await makeService().getXrayFlares(createMockContext() as never);
+
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
+      'https://services.swpc.noaa.gov/json/goes/primary/xray-flares-7-day.json',
+    );
+  });
+
+  it('maps one discrete flare event, reading every class as SWPC published it', async () => {
+    mockFetch.mockResolvedValue(makeResponse([SWPC_XRAY_FLARE_FEED[0]]));
+
+    const flares = await makeService().getXrayFlares(createMockContext() as never);
+
+    // The unmapped keys — max_ratio, max_ratio_time, current_int_xrlong (an
+    // *integrated* flux four decades above the peak) — must not reach the output.
+    expect(flares).toEqual([
+      {
+        beginTime: '2026-09-10T20:00:00Z',
+        maxTime: '2026-09-10T20:07:00Z',
+        endTime: '2026-09-10T20:12:00Z',
+        beginClass: 'B4.2',
+        maxClass: 'B8.1',
+        endClass: 'B6.0',
+        peakFluxWm2: 8.120343295558996e-7,
+        satellite: 18,
+      },
+    ]);
+  });
+
+  it('carries a null max_ratio through without touching the mapped fields', async () => {
+    mockFetch.mockResolvedValue(makeResponse([SWPC_XRAY_FLARE_FEED[2]]));
+
+    const flares = await makeService().getXrayFlares(createMockContext() as never);
+
+    expect(flares[0]!.maxClass).toBe('B3.4');
+    expect(flares[0]!.peakFluxWm2).toBe(3.453629631167132e-7);
+    expect(flares[0]!.endClass).toBe('B2.9');
+  });
+
+  it('reports an in-progress flare decay as null rather than inventing one', async () => {
+    // SWPC publishes the record at onset (time_tag equals begin_time on every
+    // record), so a flare still in progress has no decay time or class yet.
+    mockFetch.mockResolvedValue(
+      makeResponse([
+        {
+          ...SWPC_XRAY_FLARE_FEED[3],
+          end_time: null,
+          end_class: null,
+        },
+      ]),
+    );
+
+    const flares = await makeService().getXrayFlares(createMockContext() as never);
+
+    expect(flares[0]!.endTime).toBeNull();
+    expect(flares[0]!.endClass).toBeNull();
+    expect(flares[0]!.maxTime).toBe('2026-09-17T12:16:00Z');
+  });
+
+  it('orders events oldest-first even when upstream serves them newest-first', async () => {
+    // Upstream serves oldest-first today; ordering is an invariant of the domain
+    // type, as it is for the solar-wind series, not an accident of the feed.
+    mockFetch.mockResolvedValue(makeResponse([...SWPC_XRAY_FLARE_FEED].reverse()));
+
+    const flares = await makeService().getXrayFlares(createMockContext() as never);
+
+    expect(flares.map((f) => f.beginTime)).toEqual([
+      '2026-09-10T20:00:00Z',
+      '2026-09-12T16:18:00Z',
+      '2026-09-16T11:46:00Z',
+      '2026-09-17T12:08:00Z',
+    ]);
+  });
+
+  it('returns an empty series for an empty feed', async () => {
+    mockFetch.mockResolvedValue(makeResponse([]));
+
+    expect(await makeService().getXrayFlares(createMockContext() as never)).toEqual([]);
+  });
+});
+
+describe('SpaceWeatherService.getF107 (#31)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('requests the F10.7 feed', async () => {
+    mockFetch.mockResolvedValue(makeResponse([]));
+
+    await makeService().getF107(createMockContext() as never);
+
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
+      'https://services.swpc.noaa.gov/json/f107_cm_flux.json',
+    );
+  });
+
+  it('takes the latest Noon report, not the newest record, and normalizes its Z-less tag', async () => {
+    // The feed's index-0 record is that day's 22:00 Afternoon report. SWPC's own
+    // one-value summary reported the 20:00 Noon record instead, and Noon is the
+    // only schedule carrying ninety_day_mean.
+    mockFetch.mockResolvedValue(makeResponse(SWPC_F107_FEED));
+
+    const f107 = await makeService().getF107(createMockContext() as never);
+
+    expect(f107).toEqual({
+      observedTime: '2026-09-16T20:00:00Z',
+      fluxSfu: 100,
+      ninetyDayMeanSfu: 126,
+      reportingSchedule: 'Noon',
+    });
+  });
+
+  it('picks the newest Noon report regardless of the order the feed serves', async () => {
+    mockFetch.mockResolvedValue(makeResponse([...SWPC_F107_FEED].reverse()));
+
+    const f107 = await makeService().getF107(createMockContext() as never);
+
+    expect(f107?.observedTime).toBe('2026-09-16T20:00:00Z');
+    expect(f107?.ninetyDayMeanSfu).toBe(126);
+  });
+
+  it('reports a Noon record carrying no 90-day mean as null', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse([
+        {
+          time_tag: '2026-09-16T20:00:00',
+          frequency: 2800,
+          flux: 100,
+          reporting_schedule: 'Noon',
+          avg_begin_date: null,
+          ninety_day_mean: null,
+          rec_count: null,
+        },
+      ]),
+    );
+
+    const f107 = await makeService().getF107(createMockContext() as never);
+
+    expect(f107?.fluxSfu).toBe(100);
+    expect(f107?.ninetyDayMeanSfu).toBeNull();
+  });
+
+  it('returns null when the feed carries no record at all', async () => {
+    mockFetch.mockResolvedValue(makeResponse([]));
+
+    expect(await makeService().getF107(createMockContext() as never)).toBeNull();
+  });
+
+  it('returns null when the feed carries no Noon report', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse(SWPC_F107_FEED.filter((r) => r.reporting_schedule !== 'Noon')),
+    );
+
+    expect(await makeService().getF107(createMockContext() as never)).toBeNull();
+  });
+});
+
 describe('SpaceWeatherService Kp feeds (timeTag normalization #13)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -1194,6 +1446,414 @@ describe('kpToGScale thresholds (#27)', () => {
 
   it('resolves every integer K value exactly as before (alert-path regression)', () => {
     expect([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(kpToGScale)).toEqual([0, 0, 0, 0, 0, 1, 2, 3, 4, 5]);
+  });
+});
+
+describe('SpaceWeatherService.getNoaaScales normalization', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  /**
+   * Today's period (feed key "0") is an observation: SWPC populates a real `Scale`
+   * and `Text` on all three categories and leaves every probability null. This
+   * characterization pins that mapping — it is the half of the normalizer the
+   * forecast-period fix must leave byte-identical.
+   */
+  it('maps the observed period straight through, scales as numbers and probabilities null', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse({
+        '0': {
+          DateStamp: '2026-09-17',
+          TimeStamp: '17:13:00',
+          R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+      }),
+    );
+
+    const scales = await makeService().getNoaaScales(createMockContext() as never);
+
+    expect(scales.today.date).toBe('2026-09-17');
+    expect(scales.today.time).toBe('17:13:00');
+    expect(scales.today.G).toEqual({
+      category: 'G',
+      scale: 0,
+      text: 'none',
+      minorProb: null,
+      majorProb: null,
+    });
+    expect(scales.today.R).toEqual({
+      category: 'R',
+      scale: 0,
+      text: 'none',
+      minorProb: null,
+      majorProb: null,
+    });
+    expect(scales.today.S).toEqual({
+      category: 'S',
+      scale: 0,
+      text: 'none',
+      minorProb: null,
+      majorProb: null,
+    });
+    expect(scales.forecast).toEqual([]);
+  });
+
+  it('reads a non-zero observed scale and its descriptor as issued', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse({
+        '0': {
+          DateStamp: '2026-09-17',
+          TimeStamp: '17:13:00',
+          R: { Scale: '2', Text: 'moderate', MinorProb: null, MajorProb: null },
+          S: { Scale: '1', Text: 'minor', Prob: null },
+          G: { Scale: '3', Text: 'strong' },
+        },
+      }),
+    );
+
+    const { today } = await makeService().getNoaaScales(createMockContext() as never);
+
+    expect(today.G.scale).toBe(3);
+    expect(today.G.text).toBe('strong');
+    expect(today.R.scale).toBe(2);
+    expect(today.S.scale).toBe(1);
+  });
+
+  it('collects forecast periods from keys "1"–"3" in order and ignores key "-1"', async () => {
+    const forecastPeriod = (date: string, gScale: string) => ({
+      DateStamp: date,
+      TimeStamp: '00:00:00',
+      R: { Scale: null, Text: null, MinorProb: '5', MajorProb: '1' },
+      S: { Scale: null, Text: null, Prob: '1' },
+      G: { Scale: gScale, Text: gScale === '0' ? 'none' : 'minor' },
+    });
+    mockFetch.mockResolvedValue(
+      makeResponse({
+        '-1': {
+          DateStamp: '2026-09-16',
+          TimeStamp: '17:13:00',
+          R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+        '0': {
+          DateStamp: '2026-09-17',
+          TimeStamp: '17:13:00',
+          R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+        '1': forecastPeriod('2026-09-17', '1'),
+        '2': forecastPeriod('2026-09-18', '0'),
+        '3': forecastPeriod('2026-09-19', '0'),
+      }),
+    );
+
+    const { today, forecast } = await makeService().getNoaaScales(createMockContext() as never);
+
+    // The forecast series opens on today's own calendar day — key "1" repeats key "0"'s DateStamp.
+    expect(forecast.map((p) => p.date)).toEqual(['2026-09-17', '2026-09-18', '2026-09-19']);
+    expect(forecast[0]!.date).toBe(today.date);
+  });
+
+  /**
+   * SWPC issues no R/S *level* for a future day — it issues a probability. The feed
+   * says so with `Scale: null` / `Text: null` alongside a populated `MinorProb` /
+   * `MajorProb` (R) or `Prob` (S), and the normalizer must carry that null through
+   * rather than resolving it to level 0 (#23).
+   */
+  it('preserves a null forecast R/S scale and parses the probabilities SWPC issued (#23)', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse({
+        '0': {
+          DateStamp: '2026-09-17',
+          TimeStamp: '17:13:00',
+          R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+        '1': {
+          DateStamp: '2026-09-17',
+          TimeStamp: '17:13:00',
+          R: { Scale: null, Text: null, MinorProb: '5', MajorProb: '1' },
+          S: { Scale: null, Text: null, Prob: '1' },
+          G: { Scale: '1', Text: 'minor' },
+        },
+      }),
+    );
+
+    const { today, forecast } = await makeService().getNoaaScales(createMockContext() as never);
+
+    expect(forecast[0]!.R).toEqual({
+      category: 'R',
+      scale: null,
+      text: null,
+      minorProb: 5,
+      majorProb: 1,
+    });
+    expect(forecast[0]!.S).toEqual({
+      category: 'S',
+      scale: null,
+      text: null,
+      minorProb: 1,
+      majorProb: null,
+    });
+    // G does carry a real forecast level, so it is unaffected.
+    expect(forecast[0]!.G.scale).toBe(1);
+    expect(forecast[0]!.G.text).toBe('minor');
+    // Today's observed zeros are a real level 0 and must not be confused with the nulls.
+    expect(today.R.scale).toBe(0);
+    expect(today.S.scale).toBe(0);
+  });
+
+  it('normalizes an unparseable probability to null rather than zero (#23)', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse({
+        '0': {
+          DateStamp: '2026-09-17',
+          TimeStamp: '17:13:00',
+          R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+        '1': {
+          DateStamp: '2026-09-18',
+          TimeStamp: '00:00:00',
+          R: { Scale: null, Text: null, MinorProb: 'n/a', MajorProb: '' },
+          S: { Scale: null, Text: null, Prob: 'unknown' },
+          G: { Scale: '0', Text: 'none' },
+        },
+      }),
+    );
+
+    const { forecast } = await makeService().getNoaaScales(createMockContext() as never);
+
+    expect(forecast[0]!.R.minorProb).toBeNull();
+    expect(forecast[0]!.R.majorProb).toBeNull();
+    expect(forecast[0]!.S.minorProb).toBeNull();
+  });
+
+  it('carries a G probability through when the feed ever supplies one (#23)', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse({
+        '0': {
+          DateStamp: '2026-09-17',
+          TimeStamp: '17:13:00',
+          R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+        '1': {
+          DateStamp: '2026-09-18',
+          TimeStamp: '00:00:00',
+          R: { Scale: null, Text: null, MinorProb: '5', MajorProb: '1' },
+          S: { Scale: null, Text: null, Prob: '1' },
+          G: { Scale: null, Text: null, Prob: '35' },
+        },
+      }),
+    );
+
+    const { forecast } = await makeService().getNoaaScales(createMockContext() as never);
+
+    expect(forecast[0]!.G.scale).toBeNull();
+    expect(forecast[0]!.G.text).toBeNull();
+    expect(forecast[0]!.G.minorProb).toBe(35);
+  });
+});
+
+describe('SpaceWeatherService.getForecastDiscussion (#32)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  /** The text product comes back verbatim — no JSON parse on this path. */
+  function serveDiscussion(body: string): void {
+    mockFetch.mockResolvedValue(makeRawResponse(body));
+  }
+
+  it('reads the issue time from the product body, not from HTTP freshness', async () => {
+    serveDiscussion(SWPC_DISCUSSION);
+
+    const discussion = await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(discussion.issued).toBe('2026-09-17T12:30:00Z');
+  });
+
+  it('requests the discussion product path', async () => {
+    serveDiscussion(SWPC_DISCUSSION);
+
+    await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('https://services.swpc.noaa.gov/text/discussion.txt');
+  });
+
+  it('splits every topic section in product order', async () => {
+    serveDiscussion(SWPC_DISCUSSION);
+
+    const { sections } = await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(sections.map((s) => s.topic)).toEqual([
+      'Solar Activity',
+      'Energetic Particle',
+      'Solar Wind',
+      'Geospace',
+    ]);
+    // Every section on this product carries both blocks.
+    expect(sections.every((s) => s.summary !== null && s.forecast !== null)).toBe(true);
+  });
+
+  it('keeps a multi-paragraph summary whole rather than truncating at the blank line', async () => {
+    serveDiscussion(SWPC_DISCUSSION);
+
+    const { sections } = await makeService().getForecastDiscussion(createMockContext() as never);
+    const solarActivity = sections[0]!;
+
+    expect(solarActivity.summary).toContain('long-duration B7.9 flare at 16/2345 UTC');
+    // The second paragraph sits past a blank line and must survive it.
+    expect(solarActivity.summary).toContain('No Earth-directed CMEs were observed');
+    expect(solarActivity.summary).toContain('\n\n');
+    // The block ends at the next ".Forecast..." header — its text is a separate field.
+    expect(solarActivity.summary).not.toContain('expected to remain at very low levels');
+    expect(solarActivity.forecast).toContain('expected to remain at very low levels');
+  });
+
+  it('reads a section past the first, not just the leading one', async () => {
+    serveDiscussion(SWPC_DISCUSSION);
+
+    const { sections } = await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(sections[2]!.topic).toBe('Solar Wind');
+    expect(sections[2]!.summary).toContain('negative polarity coronal hole');
+    expect(sections[3]!.topic).toBe('Geospace');
+    expect(sections[3]!.forecast).toContain('G1 (Minor) storm');
+    // The last section's forecast runs to the end of the product.
+    expect(sections[3]!.forecast).toContain('as enhancements wane.');
+  });
+
+  it('resolves a section with no ".Forecast..." block to a null forecast', async () => {
+    serveDiscussion(
+      [
+        ':Product: Forecast Discussion',
+        ':Issued: 2026 Sep 17 1230 UTC',
+        '#',
+        'Solar Activity',
+        '',
+        '.24 hr Summary...',
+        'Very low levels throughout the period.',
+        '',
+        'Geospace',
+        '',
+        '.24 hr Summary...',
+        'The geomagnetic field was quiet.',
+        '',
+        '.Forecast...',
+        'Unsettled conditions are likely.',
+        '',
+      ].join('\n'),
+    );
+
+    const { sections } = await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(sections).toHaveLength(2);
+    expect(sections[0]!.topic).toBe('Solar Activity');
+    expect(sections[0]!.summary).toBe('Very low levels throughout the period.');
+    expect(sections[0]!.forecast).toBeNull();
+    expect(sections[1]!.forecast).toBe('Unsettled conditions are likely.');
+  });
+
+  it('resolves an empty ".24 hr Summary..." block to a null summary', async () => {
+    serveDiscussion(
+      [
+        ':Issued: 2026 Sep 17 1230 UTC',
+        'Geospace',
+        '',
+        '.24 hr Summary...',
+        '',
+        '.Forecast...',
+        'Unsettled conditions are likely.',
+      ].join('\n'),
+    );
+
+    const { sections } = await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(sections[0]!.summary).toBeNull();
+    expect(sections[0]!.forecast).toBe('Unsettled conditions are likely.');
+  });
+
+  it('falls back to the raw ":Issued:" text when it is not the SWPC datetime shape', async () => {
+    serveDiscussion(
+      [':Issued: sometime tuesday', 'Geospace', '', '.24 hr Summary...', 'Quiet.'].join('\n'),
+    );
+
+    const discussion = await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(discussion.issued).toBe('sometime tuesday');
+  });
+
+  it('reports null rather than a time when the product carries no ":Issued:" line', async () => {
+    serveDiscussion(['Geospace', '', '.24 hr Summary...', 'Quiet.'].join('\n'));
+
+    const discussion = await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(discussion.issued).toBeNull();
+    expect(discussion.sections).toHaveLength(1);
+  });
+
+  it('never reads a body prose line as a topic heading', async () => {
+    // "No Earth-directed CMEs..." is an unprefixed line inside a summary block, and a
+    // naive unprefixed-line scan would open a section on it.
+    serveDiscussion(SWPC_DISCUSSION);
+
+    const { sections } = await makeService().getForecastDiscussion(createMockContext() as never);
+
+    expect(sections).toHaveLength(4);
+    expect(sections.map((s) => s.topic)).not.toContain('No Earth-directed CMEs were observed in');
+  });
+
+  it('rejects a plain-text body with neither an issue line nor a topic section as feed_moved', async () => {
+    serveDiscussion('Service temporarily unavailable. Please try later.\n');
+
+    await expect(
+      makeService().getForecastDiscussion(createMockContext() as never),
+    ).rejects.toMatchObject({
+      data: { reason: 'feed_moved', retryable: false, path: '/text/discussion.txt' },
+    });
+  });
+
+  it('rejects a product carrying an issue line but no topic section as feed_moved', async () => {
+    // The sections are the product. ":Issued:" heads every SWPC text product, so it
+    // cannot tell this one from any other — a body carrying it and nothing else is a
+    // shape break, not a discussion with no topics.
+    serveDiscussion(
+      [
+        ':Product: 3-Day Forecast',
+        ':Issued: 2026 Sep 17 1230 UTC',
+        '# Prepared by the U.S. Dept. of Commerce, NOAA, Space Weather Prediction Center',
+        '#',
+        'A. NOAA Geomagnetic Activity Observation and Forecast',
+        '',
+      ].join('\n'),
+    );
+
+    await expect(
+      makeService().getForecastDiscussion(createMockContext() as never),
+    ).rejects.toMatchObject({
+      data: { reason: 'feed_moved', retryable: false, path: '/text/discussion.txt' },
+    });
+  });
+
+  it('rejects an HTML body on the text path as feed_unavailable', async () => {
+    serveDiscussion('<!DOCTYPE html><html><body>429 Too Many Requests</body></html>');
+
+    await expect(
+      makeService().getForecastDiscussion(createMockContext() as never),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('SWPC product returned HTML instead of text'),
+      data: { reason: 'feed_unavailable', path: '/text/discussion.txt' },
+    });
   });
 });
 

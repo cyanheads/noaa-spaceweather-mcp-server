@@ -25,6 +25,7 @@ import { getKpIndex } from '@/mcp-server/tools/definitions/get-kp-index.tool.js'
 import { getSolarActivity } from '@/mcp-server/tools/definitions/get-solar-activity.tool.js';
 import { getSolarWind } from '@/mcp-server/tools/definitions/get-solar-wind.tool.js';
 import { initSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
+import { SWPC_DISCUSSION } from '../fixtures/swpc-discussion.js';
 
 /** The `CallToolResult` a client receives — the MCP SDK type, via the runner's own return. */
 type ToolResult = Awaited<ReturnType<typeof runToolContract>>;
@@ -32,16 +33,24 @@ type ToolResult = Awaited<ReturnType<typeof runToolContract>>;
 const BASE_URL = 'https://services.swpc.noaa.gov';
 
 const SCALES_PATH = '/products/noaa-scales.json';
+const DISCUSSION_PATH = '/text/discussion.txt';
 const KP_OBSERVED_PATH = '/products/noaa-planetary-k-index.json';
 const AURORA_PATH = '/json/ovation_aurora_latest.json';
 const WIND_PATH = '/json/rtsw/rtsw_wind_1m.json';
-const XRAY_PATH = '/json/goes/primary/xrays-7-day.json';
+const XRAY_PATH = '/json/goes/primary/xrays-6-hour.json';
+const FLARES_PATH = '/json/goes/primary/xray-flares-7-day.json';
+const F107_PATH = '/json/f107_cm_flux.json';
 const ALERTS_PATH = '/products/alerts.json';
 
 /**
  * A minimal valid body per feed path, so a case can fail exactly one feed and every
  * other feed the tool composes still succeeds — which is what makes the stubbed
  * fetch call count an attempt count for the path under test.
+ *
+ * A string value is served as a plain-text response and anything else as JSON, because
+ * the discussion product is text: routing it through `Response.json` would deliver a
+ * quoted JSON string whose `:Issued:` line no longer starts a line, and the path would
+ * fail its shape guard while pretending to succeed.
  */
 const FEED_BODIES: Record<string, unknown> = {
   [SCALES_PATH]: {
@@ -53,6 +62,7 @@ const FEED_BODIES: Record<string, unknown> = {
       S: { Scale: '0', Text: 'none', Prob: null },
     },
   },
+  [DISCUSSION_PATH]: SWPC_DISCUSSION,
   [KP_OBSERVED_PATH]: [{ time_tag: '2026-09-17T00:00:00', Kp: 2, a_running: 5, station_count: 8 }],
   '/products/noaa-planetary-k-index-forecast.json': [
     { time_tag: '2026-09-17T03:00:00', kp: 2, observed: 'predicted', noaa_scale: null },
@@ -66,6 +76,8 @@ const FEED_BODIES: Record<string, unknown> = {
   [WIND_PATH]: [],
   '/json/rtsw/rtsw_mag_1m.json': [],
   [XRAY_PATH]: [],
+  [FLARES_PATH]: [],
+  [F107_PATH]: [],
   '/json/solar_probabilities.json': [],
   '/json/goes/primary/integral-protons-plot-3-day.json': [],
   '/json/solar_regions.json': [],
@@ -116,17 +128,32 @@ function abortCaller(controller: AbortController): FeedFailure {
 let fetchCalls: string[] = [];
 const realFetch = globalThis.fetch;
 
+/**
+ * The SWPC path a request is for, or the whole URL when it is not a SWPC request.
+ * Compared on the parsed origin rather than a string prefix: a prefix test also
+ * matches a lookalike host (`https://services.swpc.noaa.gov.example/...`), which would
+ * route an off-origin request to a stubbed feed body.
+ */
+function swpcPath(url: string): string {
+  const parsed = URL.parse(url);
+  return parsed?.origin === BASE_URL ? `${parsed.pathname}${parsed.search}` : url;
+}
+
 /** Route every SWPC path to its valid body, and `targetPath` to `failure`. */
 function installFetch(targetPath: string, failure: FeedFailure): void {
   fetchCalls = [];
   globalThis.fetch = vi.fn((input: unknown, init?: RequestInit) => {
     const url = String(input);
     fetchCalls.push(url);
-    const path = url.startsWith(BASE_URL) ? url.slice(BASE_URL.length) : url;
+    const path = swpcPath(url);
     if (path === targetPath) return failure(init);
     const known = FEED_BODIES[path];
     if (known === undefined) return Promise.reject(new Error(`Unstubbed SWPC path: ${path}`));
-    return Promise.resolve(Response.json(known));
+    return Promise.resolve(
+      typeof known === 'string'
+        ? new Response(known, { status: 200, headers: { 'content-type': 'text/plain' } })
+        : Response.json(known),
+    );
   }) as unknown as typeof globalThis.fetch;
 }
 
@@ -333,6 +360,189 @@ describe('feed failure classification by upstream failure class', () => {
     // The diagnostic listing of the keys the feed did carry survives the enrichment.
     expect(error.data?.available).toEqual(['1']);
     expect(attemptsFor(SCALES_PATH)).toBe(1);
+  });
+});
+
+/**
+ * The discussion product is the one non-JSON fetch on the surface. It rides the same
+ * retry-plus-classify funnel as every JSON feed, so the same two reasons must reach the
+ * wire from it with the same attempt counts — a second fetch path with its own error
+ * handling would surface an unclassified failure instead (#32).
+ *
+ * Reached only with `include_discussion: true`; the `{}` cases above never fetch it.
+ */
+describe('forecast discussion text path rides the feed-failure contract', () => {
+  it('produces feed_moved on a permanent 4xx, in one attempt', async () => {
+    const result = await callWithFailure(
+      getConditions,
+      { include_discussion: true },
+      DISCUSSION_PATH,
+      httpStatus(404, 'Not Found'),
+    );
+    const error = errorOf(result);
+    const hint = declaredRecovery(getConditions, 'feed_moved');
+
+    expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+    expect(error.data?.reason).toBe('feed_moved');
+    expect(error.data?.recovery).toEqual({ hint });
+    expect(textOf(result)).toContain(`Recovery: ${hint}`);
+    expect(error.data?.path).toBe(DISCUSSION_PATH);
+    expect(error.data?.status).toBe(404);
+    expect(attemptsFor(DISCUSSION_PATH)).toBe(1);
+    // The scales feed answered normally — only the text path failed.
+    expect(attemptsFor(SCALES_PATH)).toBe(1);
+  });
+
+  it('produces feed_unavailable on a 503, after the full retry budget', async () => {
+    const result = await callWithFailure(
+      getConditions,
+      { include_discussion: true },
+      DISCUSSION_PATH,
+      httpStatus(503, 'Service Unavailable'),
+    );
+    const error = errorOf(result);
+    const hint = declaredRecovery(getConditions, 'feed_unavailable');
+
+    expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+    expect(error.data?.reason).toBe('feed_unavailable');
+    expect(error.data?.recovery).toEqual({ hint });
+    expect(textOf(result)).toContain(`Recovery: ${hint}`);
+    expect(error.data?.path).toBe(DISCUSSION_PATH);
+    expect(error.data?.retryAttempts).toBe(4);
+    expect(attemptsFor(DISCUSSION_PATH)).toBe(4);
+  });
+
+  it('classifies an HTML body served as 200 as feed_unavailable', async () => {
+    const result = await callWithFailure(
+      getConditions,
+      { include_discussion: true },
+      DISCUSSION_PATH,
+      body200('<!DOCTYPE html><html><body>429</body></html>', { 'content-type': 'text/html' }),
+    );
+    const error = errorOf(result);
+
+    expect(error.data?.reason).toBe('feed_unavailable');
+    expect(error.data?.path).toBe(DISCUSSION_PATH);
+    expect(attemptsFor(DISCUSSION_PATH)).toBe(4);
+  });
+
+  it('classifies a plain-text body that is not the product as feed_moved in one attempt', async () => {
+    const result = await callWithFailure(
+      getConditions,
+      { include_discussion: true },
+      DISCUSSION_PATH,
+      body200('Service temporarily unavailable. Please try later.\n', {
+        'content-type': 'text/plain',
+      }),
+    );
+    const error = errorOf(result);
+    const hint = declaredRecovery(getConditions, 'feed_moved');
+
+    expect(error.data?.reason).toBe('feed_moved');
+    expect(error.data?.retryable).toBe(false);
+    expect(error.data?.recovery).toEqual({ hint });
+    expect(textOf(result)).toContain(`Recovery: ${hint}`);
+    expect(error.data?.path).toBe(DISCUSSION_PATH);
+    // The shape guard runs outside the retry loop, so a break no retry can fix
+    // costs one upstream attempt — the same as the scales feed losing key "0".
+    expect(attemptsFor(DISCUSSION_PATH)).toBe(1);
+  });
+
+  it('succeeds through the real service when every feed answers', async () => {
+    installFetch('__none__', httpStatus(500));
+    const result = await runToolContract(getConditions, { include_discussion: true });
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as {
+      discussion?: { issued?: string; sections?: { topic: string }[] };
+      observedAt?: string;
+    };
+    expect(structured.observedAt).toBe('2026-09-17T12:00:00Z');
+    expect(structured.discussion?.issued).toBe('2026-09-17T12:30:00Z');
+    expect(structured.discussion?.sections?.map((s) => s.topic)).toEqual([
+      'Solar Activity',
+      'Energetic Particle',
+      'Solar Wind',
+      'Geospace',
+    ]);
+    expect(attemptsFor(DISCUSSION_PATH)).toBe(1);
+  });
+
+  it('never fetches the discussion product when include_discussion is absent', async () => {
+    installFetch('__none__', httpStatus(500));
+    const result = await runToolContract(getConditions, {});
+
+    expect(result.isError).toBeFalsy();
+    expect((result.structuredContent as { discussion?: unknown }).discussion).toBeNull();
+    expect(attemptsFor(DISCUSSION_PATH)).toBe(0);
+  });
+});
+
+/**
+ * `get_solar_activity` composes six feeds; the flare-event and F10.7 feeds are the
+ * two newest. The `TOOLS` table below exercises one path per tool, so these cases
+ * are the only contract coverage those two paths have — and the tool keeps
+ * `Promise.all`, so either of them failing must fail the whole call rather than
+ * degrading to a null field a caller cannot tell from "no data".
+ */
+describe('the solar-activity flare and F10.7 feeds ride the feed-failure contract (#31)', () => {
+  const FEEDS: { label: string; path: string }[] = [
+    { label: 'the flare-event feed', path: FLARES_PATH },
+    { label: 'the F10.7 feed', path: F107_PATH },
+  ];
+
+  it.each(FEEDS)(
+    '$label produces feed_moved on a permanent 4xx, in one attempt',
+    async ({ path }) => {
+      const result = await callWithFailure(
+        getSolarActivity,
+        {},
+        path,
+        httpStatus(404, 'Not Found'),
+      );
+      const error = errorOf(result);
+      const hint = declaredRecovery(getSolarActivity, 'feed_moved');
+
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error.data?.reason).toBe('feed_moved');
+      expect(error.data?.retryable).toBe(false);
+      expect(error.data?.recovery).toEqual({ hint });
+      expect(textOf(result)).toContain(`Recovery: ${hint}`);
+      expect(error.data?.path).toBe(path);
+      expect(attemptsFor(path)).toBe(1);
+    },
+  );
+
+  it.each(FEEDS)(
+    '$label produces feed_unavailable after the full retry budget',
+    async ({ path }) => {
+      const result = await callWithFailure(
+        getSolarActivity,
+        {},
+        path,
+        httpStatus(503, 'Service Unavailable'),
+      );
+      const error = errorOf(result);
+      const hint = declaredRecovery(getSolarActivity, 'feed_unavailable');
+
+      expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error.data?.reason).toBe('feed_unavailable');
+      expect(error.data?.recovery).toEqual({ hint });
+      expect(textOf(result)).toContain(`Recovery: ${hint}`);
+      expect(error.data?.path).toBe(path);
+      expect(error.data?.retryAttempts).toBe(4);
+      expect(attemptsFor(path)).toBe(4);
+    },
+  );
+
+  it('answers from every composed feed when none of them fails', async () => {
+    installFetch('__none__', httpStatus(500));
+    const result = await runToolContract(getSolarActivity, { flare_hours: 168 });
+
+    expect(result.isError).toBeFalsy();
+    expect(attemptsFor(FLARES_PATH)).toBe(1);
+    expect(attemptsFor(F107_PATH)).toBe(1);
+    expect(attemptsFor(XRAY_PATH)).toBe(1);
   });
 });
 

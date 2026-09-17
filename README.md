@@ -35,21 +35,23 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 
 | Tool | Description |
 |:-----|:------------|
-| `noaa_spaceweather_get_conditions` | Current space-weather snapshot: NOAA R/S/G storm scales, latest Kp, and a plain-language status summary |
+| `noaa_spaceweather_get_conditions` | Current space-weather snapshot: NOAA R/S/G storm scales, latest Kp, a plain-language status summary, and optionally SWPC's forecast discussion explaining the forecast |
 | `noaa_spaceweather_get_kp_index` | Planetary K-index (0–9) — recent observed 3-hour values with G-scale equivalents and aurora-latitude guidance, plus 3-day forecast |
 | `noaa_spaceweather_get_aurora_forecast` | OVATION model aurora forecast: global probability grid, optional local lookup by coordinates with go/no-go verdict |
-| `noaa_spaceweather_get_solar_wind` | Real-time solar wind from the active L1 spacecraft: speed, proton density, temperature, and the critical Bz component — explains why current geomagnetic conditions exist |
-| `noaa_spaceweather_get_solar_activity` | Solar flare picture: GOES X-ray flux, 3-day flare-class probabilities, active solar regions with per-region probabilities, and solar radiation storm level |
+| `noaa_spaceweather_get_solar_wind` | Real-time solar wind from the active L1 spacecraft: speed, proton density, temperature, and the critical Bz component with the window's most southward reading — explains why current geomagnetic conditions exist |
+| `noaa_spaceweather_get_solar_activity` | Solar flare picture: discrete flare events with peak class and R-scale level, GOES X-ray flux, the daily F10.7 cm radio flux, 3-day flare-class probabilities, active solar regions with per-region probabilities, and solar radiation storm level |
 | `noaa_spaceweather_get_alerts` | Active SWPC alerts, watches, and warnings — structured records with product type, severity, issue time, validity window, and full message text |
 
 ## Capability reference
 
 ### `noaa_spaceweather_get_conditions` <sub>tool</sub>
 
-- No inputs — a single call composing storm scales and current Kp into one snapshot
-- Returns today's R/S/G storm scales plus a 3-day forecast series
+- `include_discussion` (bool, default false) is the only input — otherwise a single call composing storm scales and current Kp into one snapshot
+- Returns today's observed R/S/G storm levels plus SWPC's 3-day forecast series, which starts with today
+- Forecast days carry what SWPC issues: a G level, and for R and S a probability — R1–R2, R3 or greater, S1 or greater — with no level. A null level means SWPC forecasts none for that day, which is not the same as level 0
 - Current Kp with G-scale equivalent and aurora-visibility latitude guidance
-- Data sourced from the `noaa-scales.json` + `noaa-planetary-k-index.json` feeds
+- With `include_discussion`, the forecaster-written Forecast Discussion split into its topic sections (Solar Activity, Energetic Particle, Solar Wind, Geospace), each with its 24-hour summary and 3-day forecast text
+- Data sourced from the `noaa-scales.json` + `noaa-planetary-k-index.json` feeds, plus the `discussion.txt` product when the discussion is requested
 
 ---
 
@@ -75,8 +77,9 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 ### `noaa_spaceweather_get_solar_wind` <sub>tool</sub>
 
 - `window_hours` (1–168, default 3) slices client-side from a feed that carries roughly the last 24 hours at ~1-minute cadence
+- `resolution` (`reduced` default, or `full`) bounds each returned series to 200 records: the window is bucketed by record count and one real measurement is emitted per bucket — the bucket's fastest speed for plasma, its most southward Bz for mag — with the newest record in the window always last. A series already inside the bound comes back untouched, so a default 3-hour call is unaffected; `full` returns every record (~1,400 per series over 24 hours)
 - Plasma (speed, density, temperature) and magnetic field (Bx/By/Bz/Bt GSM) returned as separate oldest-first series
-- `bzStatus` surfaces southward Bz (the storm driver) as a plain-language field
+- `bzStatus` surfaces southward Bz (the storm driver) as a plain-language field, and `bzMinInWindow` with its time tag reports the window's most southward reading — both computed from the full window, before any reduction
 - `latestFeedPlasmaTime`/`latestFeedMagTime`/`feedStalenessHours` distinguish an empty window from a stale feed
 - Every record names its reporting spacecraft — no satellite is assumed as "the" active one
 
@@ -85,9 +88,13 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 ### `noaa_spaceweather_get_solar_activity` <sub>tool</sub>
 
 - `include_regions` (default true) toggles per-region active-solar-region detail to control response size
-- GOES X-ray flux (0.1–0.8 nm) with flare-class letter (A/B/C/M/X); recent readings cover the past hour
+- `flare_hours` (1–168, default 24) bounds the discrete flare events returned, filtered on each flare's onset; the feed keeps a rolling 7 days, so 168 returns everything it carries
+- Flare events come with the classes SWPC publishes — onset, peak, and decay, each with magnitude — the peak flux, and the NOAA R-scale level (0–5) that flux implies. Decay time and class are null while a flare is still in progress, and an empty window names the newest flare the feed holds
+- GOES X-ray flux (0.1–0.8 nm) with flare-class letter (A/B/C/M/X), the class with magnitude (`flareClassFull`, derived by SWPC's truncation rule so it agrees with the published flare classes), and the unformatted flux alongside the display string; recent readings cover the past hour
+- Daily F10.7 cm solar radio flux in sfu with its 90-day mean, from the Noon Penticton report — the value SWPC reports for the day. It can be up to ~24 h old, so its observation time rides with it
 - 3-day C/M/X flare-class and proton-event probabilities, each duplicated under a legacy `*1Day` name and a date-neutral name
 - Integral proton flux (≥10 MeV) drives the reported NOAA S-scale (0–5)
+- Data sourced from the `goes/primary/xrays-6-hour.json`, `goes/primary/xray-flares-7-day.json`, `f107_cm_flux.json`, `solar_probabilities.json`, `goes/primary/integral-protons-plot-3-day.json`, and `solar_regions.json` feeds
 
 ---
 
@@ -108,8 +115,8 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 SWPC-specific:
 
 - All SWPC feeds are public and keyless — no API keys required
-- Single `SpaceWeatherService` wraps all six NOAA SWPC JSON feeds with `fetchWithTimeout` + `withRetry`
-- Heterogeneous feed normalization: interleaved multi-spacecraft records (solar wind), keyed objects (storm scales), coordinate triples (OVATION)
+- Single `SpaceWeatherService` wraps every NOAA SWPC feed — the JSON products and the plain-text forecast discussion — behind one `fetchWithTimeout` + `withRetry` funnel, so both paths classify an upstream failure the same way
+- Heterogeneous feed normalization: interleaved multi-spacecraft records (solar wind), keyed objects (storm scales), coordinate triples (OVATION), section-delimited text (forecast discussion)
 - NOAA scale interpretation: raw Kp 6 → "G2 moderate storm — aurora possible to ~55° geomagnetic latitude"
 - Feed freshness surfaced per-response: solar wind updates ~1 min, aurora ~5 min, Kp 3-hour intervals
 

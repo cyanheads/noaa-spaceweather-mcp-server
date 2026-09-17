@@ -48,6 +48,48 @@ function mockService(plasma: SolarWindPlasma[], mag: SolarWindMag[]): void {
   } as never);
 }
 
+/**
+ * `count` plasma records at the feed's 1-minute cadence, oldest first, the
+ * newest one minute ago — the shape the service hands the handler.
+ */
+function makePlasmaMinuteSeries(
+  count: number,
+  speedAt: (index: number) => number | null,
+): SolarWindPlasma[] {
+  const oldestMs = Date.now() - count * 60_000;
+  return Array.from({ length: count }, (_, i) => ({
+    timeTag: new Date(oldestMs + i * 60_000).toISOString(),
+    source: SOURCE,
+    densityPerCm3: 5.2,
+    speedKmS: speedAt(i),
+    temperatureK: 80000,
+  }));
+}
+
+/** The mag counterpart of {@link makePlasmaMinuteSeries}. */
+function makeMagMinuteSeries(
+  count: number,
+  bzAt: (index: number) => number | null,
+): SolarWindMag[] {
+  const oldestMs = Date.now() - count * 60_000;
+  return Array.from({ length: count }, (_, i) => {
+    const bz = bzAt(i);
+    return {
+      timeTag: new Date(oldestMs + i * 60_000).toISOString(),
+      source: SOURCE,
+      bxGsm: 2,
+      byGsm: -1,
+      bzGsm: bz,
+      bt: bz === null ? null : Math.sqrt(bz * bz + 5),
+    };
+  });
+}
+
+/** Render a handler result through `format()` and return the text block. */
+function formatText(result: Parameters<NonNullable<typeof getSolarWind.format>>[0]): string {
+  return (getSolarWind.format!(result)[0] as { text: string }).text;
+}
+
 describe('getSolarWind', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -79,6 +121,30 @@ describe('getSolarWind', () => {
 
     // A populated window explains nothing — no notice.
     expect(getEnrichment(ctx).notice).toBeUndefined();
+  });
+
+  it('returns every windowed record, newest last, one rendered line each', async () => {
+    // Characterization of the unreduced contract: a window under the bound is
+    // returned whole, in feed order, and each series ends on the record the
+    // matching latest* field reports.
+    const plasma = makePlasmaMinuteSeries(40, () => 450);
+    const mag = makeMagMinuteSeries(40, (i) => -1 - (i % 4));
+    mockService(plasma, mag);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = getSolarWind.input.parse({ window_hours: 3 });
+    const result = await getSolarWind.handler(input, ctx);
+
+    expect(result.plasmaCount).toBe(40);
+    expect(result.magCount).toBe(40);
+    expect(result.plasma).toEqual(plasma);
+    expect(result.mag).toEqual(mag);
+    expect(result.plasma.at(-1)).toEqual(result.latestPlasma);
+    expect(result.mag.at(-1)).toEqual(result.latestMag);
+
+    const text = formatText(result);
+    expect(text.split('\n').filter((line) => line.includes('Bz=')).length).toBe(40);
+    expect(text.split('\n').filter((line) => line.includes('speed=')).length).toBe(40);
   });
 
   it('reports the spacecraft the feed named rather than a hardcoded satellite', async () => {
@@ -291,6 +357,8 @@ describe('getSolarWind', () => {
       latestFeedPlasmaTime: '2026-06-04T14:00:00Z',
       latestFeedMagTime: '2026-06-04T14:00:00Z',
       feedStalenessHours: 0.5,
+      bzMinInWindow: -15,
+      bzMinTimeTag: '2026-06-04T14:00:00Z',
     };
     const blocks = getSolarWind.format!(output);
     const text = (blocks[0] as { text: string }).text;
@@ -300,6 +368,7 @@ describe('getSolarWind', () => {
     expect(text).toContain('Bz (GSM): -15 nT');
     expect(text).toContain('SOLAR1');
     expect(text).toContain('0.5 h behind real time');
+    expect(text).toContain('Minimum Bz in window:** -15 nT at 2026-06-04T14:00:00Z');
   });
 
   it('renders a zero-hour staleness rather than dropping the line on a falsy value', () => {
@@ -314,8 +383,276 @@ describe('getSolarWind', () => {
       latestFeedPlasmaTime: '2026-06-04T14:00:00Z',
       latestFeedMagTime: '2026-06-04T14:00:00Z',
       feedStalenessHours: 0,
+      bzMinInWindow: null,
+      bzMinTimeTag: null,
     };
     const text = (getSolarWind.format!(output)[0] as { text: string }).text;
     expect(text).toContain('0 h behind real time');
+    expect(text).toContain('Minimum Bz in window:** N/A');
+  });
+});
+
+describe('getSolarWind series resolution', () => {
+  /** A record at this index is the reduction's hardest case — see the min-Bz test. */
+  const EXTREME_INDEX = 301;
+  const EXTREME_BZ = -18.4;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('bounds each series to 200 real records and keeps the newest record last', async () => {
+    const plasma = makePlasmaMinuteSeries(600, (i) => 400 + (i % 7));
+    const mag = makeMagMinuteSeries(600, (i) => -1 - (i % 5));
+    mockService(plasma, mag);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = getSolarWind.input.parse({ window_hours: 24 });
+    const result = await getSolarWind.handler(input, ctx);
+
+    expect(result.magCount).toBe(result.mag.length);
+    expect(result.plasmaCount).toBe(result.plasma.length);
+    expect(result.mag.length).toBeLessThanOrEqual(200);
+    expect(result.plasma.length).toBeLessThanOrEqual(200);
+    expect(result.mag.length).toBeLessThan(600);
+
+    // Every emitted record is a real upstream record, not a synthesized average.
+    const magByTag = new Map(mag.map((r) => [r.timeTag, r]));
+    for (const emitted of result.mag) expect(emitted).toEqual(magByTag.get(emitted.timeTag));
+    const plasmaByTag = new Map(plasma.map((r) => [r.timeTag, r]));
+    for (const emitted of result.plasma) expect(emitted).toEqual(plasmaByTag.get(emitted.timeTag));
+
+    // Oldest-first is preserved, and the tail is the newest windowed record.
+    const tags = result.mag.map((r) => Date.parse(r.timeTag));
+    expect(tags).toEqual([...tags].sort((a, b) => a - b));
+    expect(result.mag.at(-1)).toEqual(result.latestMag);
+    expect(result.mag.at(-1)!.timeTag).toBe(mag.at(-1)!.timeTag);
+    expect(result.plasma.at(-1)).toEqual(result.latestPlasma);
+
+    // Per-series reduction reporting, in one notice alongside the existing array.
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.magWindowRecords).toBe(600);
+    expect(enrichment.plasmaWindowRecords).toBe(600);
+    expect(enrichment.magBucketRecords).toBeGreaterThan(1);
+    expect(enrichment.plasmaBucketRecords).toBeGreaterThan(1);
+    expect(enrichment.notice).toMatch(/resolution/i);
+    expect(enrichment.notice).toContain('plasma');
+    expect(enrichment.notice).toContain('magnetic field');
+  });
+
+  it('reports the full-window minimum Bz and emits that record even between samples', async () => {
+    // The extreme sits inside a bucket rather than on its leading edge, so a raw
+    // index stride steps over it — the case the per-bucket minimum exists for.
+    const plasma = makePlasmaMinuteSeries(600, (i) => 400 + (i % 7));
+    const mag = makeMagMinuteSeries(600, (i) => (i === EXTREME_INDEX ? EXTREME_BZ : -1 - (i % 5)));
+    mockService(plasma, mag);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = getSolarWind.input.parse({ window_hours: 24 });
+    const result = await getSolarWind.handler(input, ctx);
+
+    expect(result.bzMinInWindow).toBe(EXTREME_BZ);
+    expect(result.bzMinTimeTag).toBe(mag[EXTREME_INDEX]!.timeTag);
+
+    // A stride starting at each bucket's first record would have missed it.
+    const bucketRecords = getEnrichment(ctx).magBucketRecords as number;
+    expect(bucketRecords).toBeGreaterThan(1);
+    expect(EXTREME_INDEX % bucketRecords).not.toBe(0);
+
+    // The emitted series itself carries the extreme record, not just the summary.
+    expect(result.mag.map((r) => r.timeTag)).toContain(mag[EXTREME_INDEX]!.timeTag);
+    const emittedMin = Math.min(...result.mag.map((r) => r.bzGsm ?? Number.POSITIVE_INFINITY));
+    expect(emittedMin).toBe(EXTREME_BZ);
+
+    const text = formatText(result);
+    expect(text).toContain(`Minimum Bz in window:** ${EXTREME_BZ} nT at ${result.bzMinTimeTag}`);
+    expect(text).toContain(`Bz=${EXTREME_BZ} nT`);
+  });
+
+  it('returns every record and no reduction reporting at full resolution', async () => {
+    const plasma = makePlasmaMinuteSeries(600, (i) => 400 + (i % 7));
+    const mag = makeMagMinuteSeries(600, (i) => (i === EXTREME_INDEX ? EXTREME_BZ : -1 - (i % 5)));
+    mockService(plasma, mag);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const input = getSolarWind.input.parse({ window_hours: 24, resolution: 'full' });
+    const result = await getSolarWind.handler(input, ctx);
+
+    expect(result.plasmaCount).toBe(600);
+    expect(result.magCount).toBe(600);
+    expect(result.plasma).toEqual(plasma);
+    expect(result.mag).toEqual(mag);
+    expect(result.bzMinInWindow).toBe(EXTREME_BZ);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeUndefined();
+    expect(enrichment.magBucketRecords).toBeUndefined();
+    expect(enrichment.magWindowRecords).toBeUndefined();
+  });
+
+  it('derives the headline fields identically with and without reduction', async () => {
+    const plasma = makePlasmaMinuteSeries(600, (i) => 400 + (i % 7));
+    const mag = makeMagMinuteSeries(600, (i) => (i === EXTREME_INDEX ? EXTREME_BZ : -1 - (i % 5)));
+    mockService(plasma, mag);
+
+    const reduced = await getSolarWind.handler(
+      getSolarWind.input.parse({ window_hours: 24 }),
+      createMockContext({ errors: getSolarWind.errors }),
+    );
+    const full = await getSolarWind.handler(
+      getSolarWind.input.parse({ window_hours: 24, resolution: 'full' }),
+      createMockContext({ errors: getSolarWind.errors }),
+    );
+
+    expect(reduced.latestPlasma).toEqual(full.latestPlasma);
+    expect(reduced.latestMag).toEqual(full.latestMag);
+    expect(reduced.bzStatus).toBe(full.bzStatus);
+    expect(reduced.bzMinInWindow).toBe(full.bzMinInWindow);
+    expect(reduced.bzMinTimeTag).toBe(full.bzMinTimeTag);
+    expect(reduced.latestFeedPlasmaTime).toBe(full.latestFeedPlasmaTime);
+    expect(reduced.latestFeedMagTime).toBe(full.latestFeedMagTime);
+  });
+
+  it('is byte-identical to full resolution when the window is inside the bound', async () => {
+    // 150 minute-cadence records sit under the 200-record bound, so the default
+    // call must reduce nothing — no rewritten series and no enrichment trailer.
+    const plasma = makePlasmaMinuteSeries(150, (i) => 400 + (i % 7));
+    const mag = makeMagMinuteSeries(150, (i) => -1 - (i % 5));
+    mockService(plasma, mag);
+
+    const reducedCtx = createMockContext({ errors: getSolarWind.errors });
+    const reduced = await getSolarWind.handler(
+      getSolarWind.input.parse({ window_hours: 3 }),
+      reducedCtx,
+    );
+    const full = await getSolarWind.handler(
+      getSolarWind.input.parse({ window_hours: 3, resolution: 'full' }),
+      createMockContext({ errors: getSolarWind.errors }),
+    );
+
+    expect(JSON.stringify(reduced)).toBe(JSON.stringify(full));
+    expect(formatText(reduced)).toBe(formatText(full));
+    expect(reduced.magCount).toBe(150);
+
+    const enrichment = getEnrichment(reducedCtx);
+    expect(enrichment.notice).toBeUndefined();
+    expect(enrichment.magBucketRecords).toBeUndefined();
+    expect(enrichment.plasmaBucketRecords).toBeUndefined();
+    expect(enrichment.magWindowRecords).toBeUndefined();
+    expect(enrichment.plasmaWindowRecords).toBeUndefined();
+  });
+
+  it('reduces one record past the bound and leaves the bound itself untouched', async () => {
+    const atBound = makeMagMinuteSeries(200, (i) => -1 - (i % 5));
+    mockService(
+      makePlasmaMinuteSeries(200, () => 450),
+      atBound,
+    );
+
+    const atBoundCtx = createMockContext({ errors: getSolarWind.errors });
+    const atBoundResult = await getSolarWind.handler(
+      getSolarWind.input.parse({ window_hours: 24 }),
+      atBoundCtx,
+    );
+    expect(atBoundResult.magCount).toBe(200);
+    expect(atBoundResult.mag).toEqual(atBound);
+    expect(getEnrichment(atBoundCtx).magBucketRecords).toBeUndefined();
+
+    const pastBound = makeMagMinuteSeries(201, (i) => -1 - (i % 5));
+    mockService(
+      makePlasmaMinuteSeries(201, () => 450),
+      pastBound,
+    );
+
+    const pastBoundCtx = createMockContext({ errors: getSolarWind.errors });
+    const pastBoundResult = await getSolarWind.handler(
+      getSolarWind.input.parse({ window_hours: 24 }),
+      pastBoundCtx,
+    );
+    expect(pastBoundResult.magCount).toBeLessThan(201);
+    expect(pastBoundResult.magCount).toBeLessThanOrEqual(200);
+    expect(pastBoundResult.mag.at(-1)!.timeTag).toBe(pastBound.at(-1)!.timeTag);
+    // Both series are one past the bound here, so both report the same reduction.
+    expect(getEnrichment(pastBoundCtx).magWindowRecords).toBe(201);
+    expect(getEnrichment(pastBoundCtx).magBucketRecords).toBe(2);
+    expect(getEnrichment(pastBoundCtx).plasmaWindowRecords).toBe(201);
+    expect(getEnrichment(pastBoundCtx).plasmaBucketRecords).toBe(2);
+  });
+
+  it('reduces each series on its own length and reports a bucket of one for the untouched one', async () => {
+    // The live feeds disagree on length (1,399 plasma vs 1,417 mag on one call), so
+    // each series carries its own factor — and one can cross the bound while the
+    // other does not.
+    const plasma = makePlasmaMinuteSeries(150, () => 450);
+    const mag = makeMagMinuteSeries(600, (i) => -1 - (i % 5));
+    mockService(plasma, mag);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const result = await getSolarWind.handler(getSolarWind.input.parse({ window_hours: 24 }), ctx);
+
+    // The short series is returned whole; the long one is bounded.
+    expect(result.plasma).toEqual(plasma);
+    expect(result.plasmaCount).toBe(150);
+    expect(result.magCount).toBeLessThanOrEqual(200);
+    expect(result.magCount).toBeLessThan(600);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.plasmaBucketRecords).toBe(1);
+    expect(enrichment.plasmaWindowRecords).toBe(150);
+    expect(enrichment.magWindowRecords).toBe(600);
+
+    // The reported bucket size is the real one: 599 older records over at most 199
+    // buckets is 4 records each, and the notice states that number rather than an
+    // effective ratio derived from the emitted count.
+    const bucketRecords = enrichment.magBucketRecords as number;
+    expect(bucketRecords).toBe(4);
+    expect(result.magCount).toBe(Math.ceil(599 / bucketRecords) + 1);
+    const notice = enrichment.notice as string;
+    expect(notice).toContain(`magnetic field 600 → ${result.magCount} records (one per 4)`);
+    // Only the reduced series is named — the untouched one has nothing to report.
+    expect(notice).not.toContain('plasma 150');
+  });
+
+  it('nulls the minimum Bz when every reading in the window is null', async () => {
+    const mag = makeMagMinuteSeries(300, () => null);
+    mockService(
+      makePlasmaMinuteSeries(300, () => 450),
+      mag,
+    );
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const result = await getSolarWind.handler(getSolarWind.input.parse({ window_hours: 24 }), ctx);
+
+    expect(result.bzMinInWindow).toBeNull();
+    expect(result.bzMinTimeTag).toBeNull();
+    expect(result.bzStatus).toMatch(/unavailable/i);
+    // Reduction still emits real records from an all-null bucket.
+    expect(result.magCount).toBeLessThanOrEqual(200);
+    const magByTag = new Map(mag.map((r) => [r.timeTag, r]));
+    for (const emitted of result.mag) expect(emitted).toEqual(magByTag.get(emitted.timeTag));
+    expect(result.mag.at(-1)).toEqual(result.latestMag);
+    expect(formatText(result)).toContain('Minimum Bz in window:** N/A');
+  });
+
+  it('nulls the minimum Bz on an empty window and still renders the line', async () => {
+    mockService([makePlasmaReading(9)], [makeMagReading(9)]);
+
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const result = await getSolarWind.handler(getSolarWind.input.parse({ window_hours: 3 }), ctx);
+
+    expect(result.magCount).toBe(0);
+    expect(result.bzMinInWindow).toBeNull();
+    expect(result.bzMinTimeTag).toBeNull();
+    expect(formatText(result)).toContain('Minimum Bz in window:** N/A');
+    // The empty-window advisory is unchanged when nothing was reduced.
+    expect(getEnrichment(ctx).notice).not.toMatch(/resolution/i);
+  });
+
+  it('rejects a resolution outside the declared enum and defaults to reduced', () => {
+    expect(getSolarWind.input.parse({}).resolution).toBe('reduced');
+    expect(getSolarWind.input.parse({ window_hours: 3 }).resolution).toBe('reduced');
+    expect(() => getSolarWind.input.parse({ resolution: 'coarse' })).toThrow();
+    expect(() => getSolarWind.input.parse({ resolution: '' })).toThrow();
+    expect(() => getSolarWind.input.parse({ resolution: 200 })).toThrow();
   });
 });
