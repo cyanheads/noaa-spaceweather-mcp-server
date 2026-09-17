@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.14](changelog/0.1.x/0.1.14.md) — 2026-09-17
+
+Kp→G-scale thresholds follow SWPC thirds, aurora forecast converts to geomagnetic latitude, get_alerts correctly excludes cancelled/superseded Watches, feed failures carry a typed reason, DST-safe forecast dates, NaN token repair
+
 ## [0.1.13](changelog/0.1.x/0.1.13.md) — 2026-09-16
 
 adopts mcp-ts-core 0.13.2 — stateless session default, session-mode server card metadata, argument-rejection structuredContent, Bun 1.4 engines floor

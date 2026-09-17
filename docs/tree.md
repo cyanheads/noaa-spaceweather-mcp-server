@@ -1,6 +1,6 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-09-16 10:38:51
+Generated on: 2026-09-17 16:58:34
 
 ```text
 noaa-spaceweather-mcp-server/
@@ -14,6 +14,8 @@ noaa-spaceweather-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── workflows/
+│   │   └── codeql.yml
 │   ├── CODE_OF_CONDUCT.md
 │   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
@@ -154,6 +156,7 @@ noaa-spaceweather-mcp-server/
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/
+│   │   ├── feed-failure-contract.test.ts
 │   │   └── space-weather-service.test.ts
 │   └── tools/
 │       ├── get-alerts.tool.test.ts
