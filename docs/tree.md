@@ -1,6 +1,6 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-09-17 16:58:34
+Generated on: 2026-09-17 18:57:19
 
 ```text
 noaa-spaceweather-mcp-server/
@@ -25,6 +25,7 @@ noaa-spaceweather-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -153,6 +154,9 @@ noaa-spaceweather-mcp-server/
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
+│   ├── fixtures/
+│   │   ├── swpc-discussion.ts
+│   │   └── swpc-xray-flares.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/

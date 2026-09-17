@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-09-17 · ⚠️ Breaking
+
+Forecast R/S probabilities replace a phantom scale 0, discrete flare history and F10.7 flux, solar wind series bounded to 200 records, and an optional SWPC forecast discussion.
+
 ## [0.1.14](changelog/0.1.x/0.1.14.md) — 2026-09-17
 
 Kp→G-scale thresholds follow SWPC thirds, aurora forecast converts to geomagnetic latitude, get_alerts correctly excludes cancelled/superseded Watches, feed failures carry a typed reason, DST-safe forecast dates, NaN token repair
