@@ -359,6 +359,11 @@ describe('getSolarWind', () => {
       feedStalenessHours: 0.5,
       bzMinInWindow: -15,
       bzMinTimeTag: '2026-06-04T14:00:00Z',
+      bzSouthMinutesInWindow: 1,
+      speedMaxInWindow: 450,
+      speedMaxTimeTag: '2026-06-04T14:00:00Z',
+      densityMaxInWindow: 5.2,
+      btMaxInWindow: 15.2,
     };
     const blocks = getSolarWind.format!(output);
     const text = (blocks[0] as { text: string }).text;
@@ -369,6 +374,12 @@ describe('getSolarWind', () => {
     expect(text).toContain('SOLAR1');
     expect(text).toContain('0.5 h behind real time');
     expect(text).toContain('Minimum Bz in window:** -15 nT at 2026-06-04T14:00:00Z');
+    expect(text).toContain('Southward Bz in window:** 1 min');
+    expect(text).toContain('Maximum speed in window:** 450 km/s at 2026-06-04T14:00:00Z');
+    expect(text).toContain('Maximum density in window:** 5.2 n/cm³');
+    expect(text).toContain('Maximum Bt in window:** 15.2 nT');
+    // Both series are present, so nothing reads as omitted.
+    expect(text).not.toContain('series not included');
   });
 
   it('renders a zero-hour staleness rather than dropping the line on a falsy value', () => {
@@ -385,10 +396,22 @@ describe('getSolarWind', () => {
       feedStalenessHours: 0,
       bzMinInWindow: null,
       bzMinTimeTag: null,
+      bzSouthMinutesInWindow: 0,
+      speedMaxInWindow: null,
+      speedMaxTimeTag: null,
+      densityMaxInWindow: null,
+      btMaxInWindow: null,
     };
     const text = (getSolarWind.format!(output)[0] as { text: string }).text;
     expect(text).toContain('0 h behind real time');
     expect(text).toContain('Minimum Bz in window:** N/A');
+    // Every window statistic renders its null/zero branch rather than dropping the line.
+    expect(text).toContain('Southward Bz in window:** 0 min');
+    expect(text).toContain('Maximum speed in window:** N/A');
+    expect(text).toContain('Maximum density in window:** N/A | **Maximum Bt in window:** N/A');
+    // An empty window is not an omitted series.
+    expect(text).not.toContain('series not included');
+    expect(text).not.toMatch(/null|undefined|NaN/);
   });
 });
 
@@ -651,8 +674,217 @@ describe('getSolarWind series resolution', () => {
   it('rejects a resolution outside the declared enum and defaults to reduced', () => {
     expect(getSolarWind.input.parse({}).resolution).toBe('reduced');
     expect(getSolarWind.input.parse({ window_hours: 3 }).resolution).toBe('reduced');
+    expect(getSolarWind.input.parse({ resolution: 'summary' }).resolution).toBe('summary');
     expect(() => getSolarWind.input.parse({ resolution: 'coarse' })).toThrow();
+    expect(() => getSolarWind.input.parse({ resolution: 'Summary' })).toThrow();
     expect(() => getSolarWind.input.parse({ resolution: '' })).toThrow();
     expect(() => getSolarWind.input.parse({ resolution: 200 })).toThrow();
+  });
+});
+
+describe('getSolarWind resolution="summary" and window statistics (#38)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  /** Every field `summary` must report identically to the series-carrying resolutions. */
+  const HEADLINE_FIELDS = [
+    'latestPlasma',
+    'latestMag',
+    'bzStatus',
+    'bzMinInWindow',
+    'bzMinTimeTag',
+    'bzSouthMinutesInWindow',
+    'speedMaxInWindow',
+    'speedMaxTimeTag',
+    'densityMaxInWindow',
+    'btMaxInWindow',
+    'latestFeedPlasmaTime',
+    'latestFeedMagTime',
+  ] as const;
+
+  /** Index of the lone window extreme on each channel — mid-bucket under a reduction. */
+  const PEAK_INDEX = 301;
+
+  /**
+   * A 600-record window whose every extreme sits on one record inside a bucket, with
+   * a southward run, a null reading, and ordinary values around it.
+   */
+  function makeStormWindow() {
+    const plasma = makePlasmaMinuteSeries(600, (i) => (i === PEAK_INDEX ? 812.4 : 400 + (i % 7)));
+    plasma[PEAK_INDEX] = { ...plasma[PEAK_INDEX]!, densityPerCm3: 31.5 };
+    plasma[10] = { ...plasma[10]!, speedKmS: null, densityPerCm3: null };
+    const mag = makeMagMinuteSeries(600, (i) =>
+      i === PEAK_INDEX ? -22.1 : i >= 500 && i < 540 ? -3 : i === 20 ? null : 2,
+    );
+    return { plasma, mag };
+  }
+
+  async function run(input: Record<string, unknown>) {
+    const ctx = createMockContext({ errors: getSolarWind.errors });
+    const result = await getSolarWind.handler(getSolarWind.input.parse(input), ctx);
+    return { ctx, result };
+  }
+
+  it('returns empty series and every headline field identical to reduced and full', async () => {
+    const { plasma, mag } = makeStormWindow();
+    mockService(plasma, mag);
+
+    const summary = await run({ window_hours: 24, resolution: 'summary' });
+    const reduced = await run({ window_hours: 24, resolution: 'reduced' });
+    const full = await run({ window_hours: 24, resolution: 'full' });
+
+    expect(summary.result.plasma).toEqual([]);
+    expect(summary.result.mag).toEqual([]);
+    for (const field of HEADLINE_FIELDS) {
+      expect(summary.result[field], field).toEqual(full.result[field]);
+      expect(reduced.result[field], field).toEqual(full.result[field]);
+    }
+    expect(getSolarWind.output.parse(summary.result)).toEqual(summary.result);
+  });
+
+  it('computes the window extremes from every record, not from the emitted buckets', async () => {
+    const { plasma, mag } = makeStormWindow();
+    mockService(plasma, mag);
+
+    const { ctx, result } = await run({ window_hours: 24, resolution: 'reduced' });
+
+    // The peaks sit mid-bucket, so a stride over the buckets' leading records misses them.
+    const plasmaBucket = getEnrichment(ctx).plasmaBucketRecords as number;
+    expect(plasmaBucket).toBeGreaterThan(1);
+    expect(PEAK_INDEX % plasmaBucket).not.toBe(0);
+    expect(result.speedMaxInWindow).toBe(812.4);
+    expect(result.speedMaxTimeTag).toBe(plasma[PEAK_INDEX]!.timeTag);
+    expect(result.densityMaxInWindow).toBe(31.5);
+    expect(result.btMaxInWindow).toBe(Math.sqrt(22.1 * 22.1 + 5));
+    // 40 minutes of the -3 nT run plus the single -22.1 nT record.
+    expect(result.bzSouthMinutesInWindow).toBe(41);
+  });
+
+  it('reports the true window record counts under summary, not the empty arrays', async () => {
+    const { plasma, mag } = makeStormWindow();
+    mockService(plasma, mag.slice(0, 590));
+
+    const { ctx, result } = await run({ window_hours: 24, resolution: 'summary' });
+
+    expect(result.plasmaCount).toBe(600);
+    expect(result.magCount).toBe(590);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.plasmaWindowRecords).toBe(600);
+    expect(enrichment.magWindowRecords).toBe(590);
+    // No bucketing ran, so no bucket size is claimed.
+    expect(enrichment.plasmaBucketRecords).toBeUndefined();
+    expect(enrichment.magBucketRecords).toBeUndefined();
+    expect(enrichment.notice).toContain('resolution="summary"');
+    expect(enrichment.notice).toContain('600 plasma and 590 magnetic field records');
+    expect(enrichment.notice).not.toMatch(/bounded to/);
+  });
+
+  it('counts southward minutes by record, adding nothing across a gap in a southward run', async () => {
+    // Minutes 0–4 and 8–11 are southward; the feed skipped 5–7 mid-run, then Bz turned
+    // north. A wall-clock span would claim 12 southward minutes; the records show 9.
+    const baseMs = Date.now() - 30 * 60_000;
+    const minutes = [0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13, 14];
+    const mag: SolarWindMag[] = minutes.map((minute) => {
+      const bz = minute <= 11 ? -4 : 3;
+      return {
+        timeTag: new Date(baseMs + minute * 60_000).toISOString(),
+        source: SOURCE,
+        bxGsm: 1,
+        byGsm: 1,
+        bzGsm: bz,
+        bt: 5,
+      };
+    });
+    // A null Bz inside the run is a missing reading, not a southward minute.
+    mag.splice(3, 0, {
+      ...mag[2]!,
+      timeTag: new Date(baseMs + 3.5 * 60_000).toISOString(),
+      bzGsm: null,
+    });
+    mockService([], mag);
+
+    for (const resolution of ['summary', 'reduced', 'full']) {
+      const { result } = await run({ window_hours: 1, resolution });
+      expect(result.bzSouthMinutesInWindow, resolution).toBe(9);
+    }
+  });
+
+  it('reports nulls and zero on an empty window, an all-null window, and a northward one', async () => {
+    mockService([makePlasmaReading(9)], [makeMagReading(9)]);
+    const empty = await run({ window_hours: 3, resolution: 'summary' });
+    expect(empty.result).toMatchObject({
+      plasmaCount: 0,
+      magCount: 0,
+      bzSouthMinutesInWindow: 0,
+      speedMaxInWindow: null,
+      speedMaxTimeTag: null,
+      densityMaxInWindow: null,
+      btMaxInWindow: null,
+    });
+
+    mockService(
+      makePlasmaMinuteSeries(30, () => null).map((r) => ({ ...r, densityPerCm3: null })),
+      makeMagMinuteSeries(30, () => null),
+    );
+    const allNull = await run({ window_hours: 3, resolution: 'summary' });
+    expect(allNull.result).toMatchObject({
+      plasmaCount: 30,
+      magCount: 30,
+      bzSouthMinutesInWindow: 0,
+      speedMaxInWindow: null,
+      speedMaxTimeTag: null,
+      densityMaxInWindow: null,
+      btMaxInWindow: null,
+    });
+
+    mockService(
+      makePlasmaMinuteSeries(30, () => 420),
+      makeMagMinuteSeries(30, () => 4),
+    );
+    const northward = await run({ window_hours: 3, resolution: 'summary' });
+    expect(northward.result.bzSouthMinutesInWindow).toBe(0);
+    expect(northward.result.speedMaxInWindow).toBe(420);
+  });
+
+  it('renders every headline field and the omitted series in content[]', async () => {
+    const { plasma, mag } = makeStormWindow();
+    mockService(plasma, mag);
+
+    const { result } = await run({ window_hours: 24, resolution: 'summary' });
+    const text = formatText(result);
+
+    expect(text).toContain(`Minimum Bz in window:** -22.1 nT at ${mag[PEAK_INDEX]!.timeTag}`);
+    expect(text).toContain('Southward Bz in window:** 41 min');
+    expect(text).toContain(
+      `Maximum speed in window:** 812.4 km/s at ${plasma[PEAK_INDEX]!.timeTag}`,
+    );
+    expect(text).toContain('Maximum density in window:** 31.5 n/cm³');
+    expect(text).toContain(`Maximum Bt in window:** ${Math.sqrt(22.1 * 22.1 + 5)} nT`);
+    expect(text).toContain(
+      '**Plasma readings:** 600 | **Mag readings:** 600 — in the window; series not included',
+    );
+    expect(text).toContain('### Latest Plasma');
+    expect(text).toContain('### Latest Magnetic Field');
+    expect(text).not.toContain('Time Series');
+  });
+
+  it('stays at the headline size whatever the window, and far under the reduced response', async () => {
+    // A full live-feed day: ~1,400 records per series.
+    const plasma = makePlasmaMinuteSeries(1_400, (i) => 400 + (i % 97));
+    const mag = makeMagMinuteSeries(1_400, (i) => -5 + (i % 11));
+    mockService(plasma, mag);
+
+    const oneHour = await run({ window_hours: 1, resolution: 'summary' });
+    const week = await run({ window_hours: 168, resolution: 'summary' });
+    const reducedWeek = await run({ window_hours: 168, resolution: 'reduced' });
+
+    const bytes = (value: unknown) => JSON.stringify(value).length;
+    expect(bytes(oneHour.result)).toBeLessThan(2_000);
+    expect(bytes(week.result)).toBeLessThan(2_000);
+    // The two differ only in the digits of their counts and extremes' time tags.
+    expect(Math.abs(bytes(week.result) - bytes(oneHour.result))).toBeLessThan(100);
+    expect(bytes(reducedWeek.result)).toBeGreaterThan(20 * bytes(week.result));
+    expect(formatText(week.result).length).toBeLessThan(2_500);
   });
 });

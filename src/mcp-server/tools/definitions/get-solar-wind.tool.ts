@@ -116,7 +116,9 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     'density (n/cm³), temperature (K), and the critical Bz component (southward Bz = negative = ' +
     'storm driver). Returns the recent plasma and magnetic field time series within the requested ' +
     'window, oldest first, each record tagged with the reporting spacecraft and bounded to 200 ' +
-    'records per series unless resolution is set to "full". ' +
+    'records per series unless resolution is set to "full" — or omitted entirely under "summary", ' +
+    'which keeps the latest readings, Bz status, and window extremes (peak speed, density, and Bt; ' +
+    'most southward Bz; minutes of southward Bz) for "what is Bz doing now" questions. ' +
     'Bz < −10 nT for sustained periods is a primary geomagnetic storm trigger — use alongside ' +
     'noaa_spaceweather_get_kp_index to see whether elevated solar wind has translated into a ' +
     'geomagnetic storm.',
@@ -137,29 +139,31 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
           'current the feed actually is.',
       ),
     resolution: z
-      .enum(['reduced', 'full'])
+      .enum(['summary', 'reduced', 'full'])
       .default('reduced')
       .describe(
-        'Detail level of the returned plasma and mag series. "reduced" (default) bounds each ' +
-          'series to at most 200 records: the window is bucketed by record count and one real ' +
-          "measurement is emitted per bucket — the bucket's fastest speed for plasma, its most " +
-          'southward Bz for mag — with the newest record in the window always last. A series ' +
-          'already inside the bound is returned untouched, so a default 3-hour call is ' +
-          'unaffected. "full" returns every record in the window (~1,400 per series over 24 ' +
-          'hours, a ~540 KB response). bzStatus, bzMinInWindow, latestPlasma, and latestMag are ' +
-          'computed from the full window either way.',
+        'Detail level of the returned plasma and mag series. "summary" returns both series ' +
+          'empty and keeps every headline field — about 2 KB whatever the window. "reduced" ' +
+          '(default) bounds each series to at most 200 records: the window is bucketed by ' +
+          "record count and one real measurement is emitted per bucket — the bucket's fastest " +
+          'speed for plasma, its most southward Bz for mag — with the newest record in the ' +
+          'window always last. A series already inside the bound is returned untouched, so a ' +
+          'default 3-hour call is unaffected. "full" returns every record in the window (~1,400 ' +
+          'per series over 24 hours, a ~540 KB response). The headline fields — latestPlasma, ' +
+          'latestMag, bzStatus, bzMinInWindow, and the window maxima and southward-Bz minutes — ' +
+          'are computed from the full window at every resolution.',
       ),
   }),
   output: z.object({
     plasma: z
       .array(PlasmaSchema)
       .describe(
-        'Plasma measurements (speed, density, temperature) within the window, oldest first. Under resolution="reduced" this is at most 200 real records — one per equal-size bucket of the window, each the bucket\'s fastest speed — with the newest windowed record last.',
+        'Plasma measurements (speed, density, temperature) within the window, oldest first. Under resolution="reduced" this is at most 200 real records — one per equal-size bucket of the window, each the bucket\'s fastest speed — with the newest windowed record last. Empty under resolution="summary".',
       ),
     mag: z
       .array(MagSchema)
       .describe(
-        'Magnetic field measurements (Bx, By, Bz, Bt) within the window, oldest first. Under resolution="reduced" this is at most 200 real records — one per equal-size bucket of the window, each the bucket\'s most southward Bz — with the newest windowed record last, so the final element always equals latestMag.',
+        'Magnetic field measurements (Bx, By, Bz, Bt) within the window, oldest first. Under resolution="reduced" this is at most 200 real records — one per equal-size bucket of the window, each the bucket\'s most southward Bz — with the newest windowed record last, so the final element always equals latestMag. Empty under resolution="summary".',
       ),
     latestPlasma: PlasmaSchema.nullable().describe(
       'Most recent plasma reading, null if no data in window.',
@@ -175,12 +179,12 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     plasmaCount: z
       .number()
       .describe(
-        'Number of plasma records in the plasma array. Equal to the records in the window at full resolution; under a reduction it is the emitted count, and plasmaWindowRecords carries the pre-reduction total.',
+        'Number of plasma records in the plasma array. Equal to the records in the window at full resolution; under a reduction it is the emitted count, and plasmaWindowRecords carries the pre-reduction total. Under resolution="summary" the array is empty and this is the records the window held.',
       ),
     magCount: z
       .number()
       .describe(
-        'Number of magnetic field records in the mag array. Equal to the records in the window at full resolution; under a reduction it is the emitted count, and magWindowRecords carries the pre-reduction total.',
+        'Number of magnetic field records in the mag array. Equal to the records in the window at full resolution; under a reduction it is the emitted count, and magWindowRecords carries the pre-reduction total. Under resolution="summary" the array is empty and this is the records the window held.',
       ),
     bzMinInWindow: z
       .number()
@@ -193,6 +197,35 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       .nullable()
       .describe(
         'ISO 8601 time tag of the record that carried bzMinInWindow. Null whenever bzMinInWindow is null.',
+      ),
+    bzSouthMinutesInWindow: z
+      .number()
+      .describe(
+        'Minutes of southward Bz in the window: the count of 1-minute mag records with bzGsm below 0, across the whole window before any reduction. Gaps in the feed are not counted, so it can fall short of the wall-clock time Bz spent southward. 0 on an empty window, an all-null window, or one with no southward Bz.',
+      ),
+    speedMaxInWindow: z
+      .number()
+      .nullable()
+      .describe(
+        'Highest solar wind speed in km/s across the whole window, computed before any reduction. Null when the window is empty or every speedKmS in it is null.',
+      ),
+    speedMaxTimeTag: z
+      .string()
+      .nullable()
+      .describe(
+        'ISO 8601 time tag of the record that carried speedMaxInWindow. Null whenever speedMaxInWindow is null.',
+      ),
+    densityMaxInWindow: z
+      .number()
+      .nullable()
+      .describe(
+        'Highest proton density in particles/cm³ across the whole window, computed before any reduction. Null when the window is empty or every densityPerCm3 in it is null.',
+      ),
+    btMaxInWindow: z
+      .number()
+      .nullable()
+      .describe(
+        'Highest total field magnitude Bt in nT across the whole window, computed before any reduction. Null when the window is empty or every bt in it is null.',
       ),
     latestFeedPlasmaTime: z
       .string()
@@ -219,7 +252,7 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       .string()
       .optional()
       .describe(
-        'Guidance on what shaped this response: that the requested window returned no plasma or magnetic field records — naming the newest record the feed carries, or reporting that the feed itself returned nothing from an active spacecraft — and that a series was bounded to 200 records, with the per-series factors.',
+        'Guidance on what shaped this response: that the requested window returned no plasma or magnetic field records — naming the newest record the feed carries, or reporting that the feed itself returned nothing from an active spacecraft — that a series was bounded to 200 records, with the per-series factors, or that resolution="summary" omitted both series.',
       ),
     plasmaBucketRecords: z
       .number()
@@ -231,7 +264,7 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       .number()
       .optional()
       .describe(
-        'Plasma records the window held before reduction. Present only when a reduction was applied to either series.',
+        'Plasma records the window held before reduction. Present only when a reduction was applied to either series, or under resolution="summary".',
       ),
     magBucketRecords: z
       .number()
@@ -243,7 +276,7 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       .number()
       .optional()
       .describe(
-        'Magnetic field records the window held before reduction. Present only when a reduction was applied to either series.',
+        'Magnetic field records the window held before reduction. Present only when a reduction was applied to either series, or under resolution="summary".',
       ),
   },
 
@@ -251,7 +284,7 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     {
       reason: 'feed_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried before failing.',
+      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried for up to 45 seconds in total before failing.',
       retryable: true,
       thrownBy: 'service',
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
@@ -324,25 +357,52 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       else bzStatus = `Northward Bz +${bz} nT — quiescent, not storm-driving.`;
     }
 
-    // Read from the full windowed series, before any reduction: the whole point of
-    // the field is that it survives a reduction that emits neither neighbour.
+    // Window statistics read the full windowed series, before any reduction: the whole
+    // point of these fields is that they survive a reduction that emits neither
+    // neighbour, and a summary that emits nothing at all.
     let bzMinInWindow: number | null = null;
     let bzMinTimeTag: string | null = null;
+    let btMaxInWindow: number | null = null;
+    // Each mag record is a 1-minute average, so the count is measured southward
+    // minutes; a gap in the feed contributes no record and so adds nothing.
+    let bzSouthMinutesInWindow = 0;
     for (const record of mag) {
       if (record.bzGsm !== null && (bzMinInWindow === null || record.bzGsm < bzMinInWindow)) {
         bzMinInWindow = record.bzGsm;
         bzMinTimeTag = record.timeTag;
       }
+      if (record.bzGsm !== null && record.bzGsm < 0) bzSouthMinutesInWindow++;
+      if (record.bt !== null && (btMaxInWindow === null || record.bt > btMaxInWindow)) {
+        btMaxInWindow = record.bt;
+      }
+    }
+    let speedMaxInWindow: number | null = null;
+    let speedMaxTimeTag: string | null = null;
+    let densityMaxInWindow: number | null = null;
+    for (const record of plasma) {
+      if (
+        record.speedKmS !== null &&
+        (speedMaxInWindow === null || record.speedKmS > speedMaxInWindow)
+      ) {
+        speedMaxInWindow = record.speedKmS;
+        speedMaxTimeTag = record.timeTag;
+      }
+      if (
+        record.densityPerCm3 !== null &&
+        (densityMaxInWindow === null || record.densityPerCm3 > densityMaxInWindow)
+      ) {
+        densityMaxInWindow = record.densityPerCm3;
+      }
     }
 
-    const plasmaReduction =
+    const summary = input.resolution === 'summary';
+    /** Emit a series at the requested resolution: nothing, bucket extremes, or every record. */
+    const emit = <T>(records: readonly T[], pick: (bucket: readonly T[]) => T) =>
       input.resolution === 'reduced'
-        ? reduceSeries(plasma, fastestSpeed)
-        : { emitted: plasma, bucketRecords: 1 };
-    const magReduction =
-      input.resolution === 'reduced'
-        ? reduceSeries(mag, mostSouthwardBz)
-        : { emitted: mag, bucketRecords: 1 };
+        ? reduceSeries(records, pick)
+        : { emitted: summary ? [] : records, bucketRecords: 1 };
+    const plasmaReduction = emit(plasma, fastestSpeed);
+    const magReduction = emit(mag, mostSouthwardBz);
     const reducedSeries = [
       plasmaReduction.bucketRecords > 1
         ? `plasma ${plasma.length} → ${plasmaReduction.emitted.length} records (one per ${plasmaReduction.bucketRecords})`
@@ -356,7 +416,10 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       emptyWindowNotice('plasma', plasma.length, latestFeedPlasmaTime),
       emptyWindowNotice('magnetic field', mag.length, latestFeedMagTime),
       reducedSeries.length > 0
-        ? `Series bounded to ${REDUCED_SERIES_MAX} records each at resolution="reduced" — ${reducedSeries.join(', ')}. Every emitted record is a real measurement (its bucket's fastest speed or most southward Bz) and the newest record in the window is last; bzStatus, bzMinInWindow, latestPlasma, and latestMag come from the full window. Pass resolution="full" for every record.`
+        ? `Series bounded to ${REDUCED_SERIES_MAX} records each at resolution="reduced" — ${reducedSeries.join(', ')}. Every emitted record is a real measurement (its bucket's fastest speed or most southward Bz) and the newest record in the window is last; bzStatus, latestPlasma, latestMag, and every window statistic come from the full window. Pass resolution="full" for every record.`
+        : null,
+      summary
+        ? `Series omitted at resolution="summary" — the latest readings, Bz status, and window statistics come from all ${plasma.length} plasma and ${mag.length} magnetic field records in the window. Pass resolution="reduced" or "full" for the series.`
         : null,
     ].filter((n): n is string => n !== null);
     // One call — the notice field is last-wins, so a second call would clobber the first.
@@ -370,6 +433,9 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
         magBucketRecords: magReduction.bucketRecords,
         magWindowRecords: mag.length,
       });
+    } else if (summary) {
+      // No bucketing ran, but the caller still needs to know how many records existed.
+      ctx.enrich({ plasmaWindowRecords: plasma.length, magWindowRecords: mag.length });
     }
 
     return {
@@ -408,13 +474,19 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
           }
         : null,
       bzStatus,
-      plasmaCount: plasmaReduction.emitted.length,
-      magCount: magReduction.emitted.length,
+      // A summary empties the arrays but must not blind the caller to what existed.
+      plasmaCount: summary ? plasma.length : plasmaReduction.emitted.length,
+      magCount: summary ? mag.length : magReduction.emitted.length,
       latestFeedPlasmaTime,
       latestFeedMagTime,
       feedStalenessHours,
       bzMinInWindow,
       bzMinTimeTag,
+      bzSouthMinutesInWindow,
+      speedMaxInWindow,
+      speedMaxTimeTag,
+      densityMaxInWindow,
+      btMaxInWindow,
     };
   },
 
@@ -430,7 +502,27 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
           : 'N/A'
       }`,
     );
-    lines.push(`**Plasma readings:** ${result.plasmaCount} | **Mag readings:** ${result.magCount}`);
+    lines.push(
+      `**Southward Bz in window:** ${result.bzSouthMinutesInWindow} min (1-minute records with Bz < 0; feed gaps not counted)`,
+    );
+    lines.push(
+      `**Maximum speed in window:** ${
+        result.speedMaxInWindow != null && result.speedMaxTimeTag != null
+          ? `${result.speedMaxInWindow} km/s at ${result.speedMaxTimeTag}`
+          : 'N/A'
+      }`,
+    );
+    lines.push(
+      `**Maximum density in window:** ${result.densityMaxInWindow != null ? `${result.densityMaxInWindow} n/cm³` : 'N/A'} | **Maximum Bt in window:** ${result.btMaxInWindow != null ? `${result.btMaxInWindow} nT` : 'N/A'}`,
+    );
+    // Only a summary empties both arrays while the window still held records.
+    const seriesOmitted =
+      result.plasma.length === 0 &&
+      result.mag.length === 0 &&
+      result.plasmaCount + result.magCount > 0;
+    lines.push(
+      `**Plasma readings:** ${result.plasmaCount} | **Mag readings:** ${result.magCount}${seriesOmitted ? ' — in the window; series not included' : ''}`,
+    );
 
     if (result.latestFeedPlasmaTime != null) {
       lines.push(`**Newest plasma record in feed:** ${result.latestFeedPlasmaTime}`);
