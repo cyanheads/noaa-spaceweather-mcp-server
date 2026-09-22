@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-09-22
+
+Trims output-schema descriptions across all six tools; tools/list drops from 59,209 B to 47,806 B (stdio, 6 tools).
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-09-22
 
 get_solar_wind adds a headline-only resolution and window-extreme fields, get_conditions surfaces yesterday's assessed R/S/G levels, get_solar_activity adds per-region flare counts, and every feed's retry ladder now runs inside one 45-second budget.
