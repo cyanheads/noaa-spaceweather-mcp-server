@@ -1,6 +1,6 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-09-22 22:18:13
+Generated on: 2026-09-22 22:59:29
 
 ```text
 noaa-spaceweather-mcp-server/
@@ -26,6 +26,7 @@ noaa-spaceweather-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
