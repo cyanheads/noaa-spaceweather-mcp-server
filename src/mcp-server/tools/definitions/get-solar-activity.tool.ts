@@ -193,9 +193,37 @@ const SolarRegionSchema = z
     region: z.number().describe('NOAA active region number.'),
     location: z.string().describe('Heliographic location, e.g. "N17E47".'),
     latitude: z.string().describe('Heliographic latitude, e.g. "N17".'),
-    spotClass: z.string().describe('Sunspot morphology class.'),
-    numberSpots: z.number().describe('Number of sunspots in this region.'),
-    magClass: z.string().describe('Magnetic field class.'),
+    spotClass: z
+      .string()
+      .describe(
+        'Sunspot morphology class, e.g. "Dsi". Empty for a spotless region (plage), where magClass is empty and numberSpots is 0 too.',
+      ),
+    numberSpots: z.number().describe('Number of sunspots in this region; 0 for a spotless region.'),
+    magClass: z.string().describe('Magnetic field class, e.g. "B"; empty for a spotless region.'),
+    areaMillionths: z
+      .number()
+      .nullable()
+      .describe(
+        'Sunspot area in millionths of the solar hemisphere. Null for a spotless region (plage).',
+      ),
+    firstObserved: z
+      .string()
+      .describe('ISO 8601 UTC time SWPC first recorded this region, e.g. "2026-09-21T07:29:27Z".'),
+    cFlareCount: z
+      .number()
+      .describe(
+        'C-class flares SWPC attributed to this region on observedDate itself — a same-day tally updated during that day, unlike the probability fields, which cover the following day.',
+      ),
+    mFlareCount: z
+      .number()
+      .describe(
+        'M-class flares SWPC attributed to this region on observedDate itself — a same-day tally updated during that day, unlike the probability fields, which cover the following day.',
+      ),
+    xFlareCount: z
+      .number()
+      .describe(
+        'X-class flares SWPC attributed to this region on observedDate itself — a same-day tally updated during that day, unlike the probability fields, which cover the following day.',
+      ),
     cFlareProbability: z
       .number()
       .describe(
@@ -219,10 +247,12 @@ const SolarRegionSchema = z
     observedDate: z
       .string()
       .describe(
-        'UTC date this region was observed. The four probability fields on this record cover the following day, not this one.',
+        'UTC date this region was observed. The three flare counts cover this day; the four probability fields cover the following day, not this one.',
       ),
   })
-  .describe('One active solar region with flare probabilities.');
+  .describe(
+    "One active solar region: morphology, the flares SWPC attributed to it that day, and the next day's flare probabilities.",
+  );
 
 const ProbsSchema = z
   .object({
@@ -275,7 +305,9 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     'the daily F10.7 cm solar radio flux, 3-day flare-class probabilities (C/M/X), active solar regions ' +
     'with per-region flare probabilities, and GOES integral proton flux at ≥10 MeV with NOAA S-scale. ' +
     'For operators tracking HF radio blackout (R-scale, driven by X-ray) and radiation storm risk ' +
-    '(S-scale, driven by protons). Active region data helps identify which region is driving current activity.',
+    '(S-scale, driven by protons). Each active region carries the C/M/X flare counts SWPC attributed ' +
+    'to it that UTC day, which identify the region driving current activity — the flare events ' +
+    'themselves carry no region.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     include_regions: z
@@ -327,7 +359,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     activeRegions: z
       .array(SolarRegionSchema)
       .describe(
-        'Currently active solar regions with per-region flare probabilities. Empty when include_regions=false or no regions are active.',
+        'Currently active solar regions with same-day flare counts and next-day flare probabilities. Empty when include_regions=false or no regions are active.',
       ),
     fetchedAt: z.string().describe('ISO 8601 timestamp of when this data was fetched.'),
   }),
@@ -345,7 +377,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     {
       reason: 'feed_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried before failing.',
+      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried for up to 45 seconds in total before failing.',
       retryable: true,
       thrownBy: 'service',
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
@@ -491,6 +523,11 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
         spotClass: r.spotClass,
         numberSpots: r.numberSpots,
         magClass: r.magClass,
+        areaMillionths: r.areaMillionths,
+        firstObserved: r.firstObserved,
+        cFlareCount: r.cFlareCount,
+        mFlareCount: r.mFlareCount,
+        xFlareCount: r.xFlareCount,
         cFlareProbability: r.cFlareProbability,
         mFlareProbability: r.mFlareProbability,
         xFlareProbability: r.xFlareProbability,
@@ -567,12 +604,22 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('');
       lines.push('### Active Solar Regions');
       for (const r of result.activeRegions) {
+        // SWPC nulls every morphology field together on a spotless region.
+        const spotless = r.spotClass === '' && r.magClass === '' && r.numberSpots === 0;
         lines.push(
-          `**AR${r.region}** — Location: ${r.location} | Latitude: ${r.latitude} | Observed: ${r.observedDate}`,
+          `**AR${r.region}** — Location: ${r.location} | Latitude: ${r.latitude} | Observed: ${r.observedDate} | First observed: ${r.firstObserved}`,
         );
-        lines.push(`  Class: ${r.spotClass}/${r.magClass} | Spots: ${r.numberSpots}`);
+        const morphology = spotless
+          ? 'Class: no spots (plage)'
+          : `Class: ${r.spotClass}/${r.magClass} | Spots: ${r.numberSpots}`;
+        const area =
+          r.areaMillionths === null ? 'none' : `${r.areaMillionths} millionths of the hemisphere`;
+        lines.push(`  ${morphology} | Area: ${area}`);
         lines.push(
-          `  Flare: C=${r.cFlareProbability}% M=${r.mFlareProbability}% X=${r.xFlareProbability}% Proton=${r.protonProbability}%`,
+          `  Flares on ${r.observedDate}: C=${r.cFlareCount} M=${r.mFlareCount} X=${r.xFlareCount}`,
+        );
+        lines.push(
+          `  Flare probability, following day: C=${r.cFlareProbability}% M=${r.mFlareProbability}% X=${r.xFlareProbability}% Proton=${r.protonProbability}%`,
         );
       }
     }

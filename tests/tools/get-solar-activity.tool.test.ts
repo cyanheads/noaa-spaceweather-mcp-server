@@ -121,10 +121,35 @@ const mockRegion: SolarRegion = {
   spotClass: 'Ekc',
   numberSpots: 12,
   magClass: 'Beta-Gamma',
+  areaMillionths: 480,
+  firstObserved: '2026-05-29T07:15:15Z',
+  cFlareCount: 3,
+  mFlareCount: 1,
+  xFlareCount: 0,
   cFlareProbability: 65,
   mFlareProbability: 30,
   xFlareProbability: 10,
   protonProbability: 5,
+  observedDate: '2026-06-04',
+};
+
+/** A spotless region (plage) as the service maps it: every morphology field emptied. */
+const spotlessRegion: SolarRegion = {
+  region: 3780,
+  latitude: 'S07',
+  location: 'S07W82',
+  spotClass: '',
+  numberSpots: 0,
+  magClass: '',
+  areaMillionths: null,
+  firstObserved: '2026-05-31T17:49:08Z',
+  cFlareCount: 0,
+  mFlareCount: 0,
+  xFlareCount: 0,
+  cFlareProbability: 1,
+  mFlareProbability: 1,
+  xFlareProbability: 1,
+  protonProbability: 1,
   observedDate: '2026-06-04',
 };
 
@@ -288,6 +313,11 @@ describe('getSolarActivity', () => {
           spotClass: 'Ekc',
           numberSpots: 12,
           magClass: 'Beta-Gamma',
+          areaMillionths: 480,
+          firstObserved: '2026-05-29T07:15:15Z',
+          cFlareCount: 3,
+          mFlareCount: 1,
+          xFlareCount: 0,
           cFlareProbability: 65,
           mFlareProbability: 30,
           xFlareProbability: 10,
@@ -316,6 +346,8 @@ describe('getSolarActivity', () => {
     expect(text).toContain('126 sfu');
     expect(text).toContain('Noon');
     expect(text).toContain('2026-06-03T20:00:00Z');
+    // The region's morphology line, rendered verbatim.
+    expect(text).toContain('  Class: Ekc/Beta-Gamma | Spots: 12');
   });
 
   it('formats X-ray flux as scientific notation in content[] (issue #4)', async () => {
@@ -748,5 +780,87 @@ describe('getSolarActivity F10.7 (#31)', () => {
     expect(result.f107).toBeNull();
     const text = (getSolarActivity.format!(result)[0] as { text: string }).text;
     expect(text).not.toContain('sfu');
+  });
+});
+
+describe('getSolarActivity per-region flare counts, area, and first-seen time (#39)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  async function runWithRegions(regions: SolarRegion[]) {
+    useSvc({ getSolarRegions: vi.fn().mockResolvedValue(regions) });
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    return getSolarActivity.handler(getSolarActivity.input.parse({}), ctx);
+  }
+
+  /** The rendered block for one region, from its heading to the next region's. */
+  function regionBlock(text: string, region: number): string {
+    const start = text.indexOf(`**AR${region}**`);
+    const next = text.indexOf('**AR', start + 1);
+    return text.slice(start, next === -1 ? undefined : next);
+  }
+
+  it('carries the counts, area, and first-seen time on every region in structuredContent', async () => {
+    const result = await runWithRegions([mockRegion, spotlessRegion]);
+
+    expect(result.activeRegions).toHaveLength(2);
+    expect(result.activeRegions[0]).toMatchObject({
+      region: 3782,
+      cFlareCount: 3,
+      mFlareCount: 1,
+      xFlareCount: 0,
+      areaMillionths: 480,
+      firstObserved: '2026-05-29T07:15:15Z',
+    });
+    // Past the first region — the spotless one keeps its null area.
+    expect(result.activeRegions[1]).toMatchObject({
+      region: 3780,
+      cFlareCount: 0,
+      areaMillionths: null,
+      firstObserved: '2026-05-31T17:49:08Z',
+    });
+    expect(getSolarActivity.output.parse(result).activeRegions).toEqual(result.activeRegions);
+  });
+
+  it('renders the same-day counts, area, and first-seen time in content[]', async () => {
+    const result = await runWithRegions([mockRegion]);
+    const block = regionBlock((getSolarActivity.format!(result)[0] as { text: string }).text, 3782);
+
+    expect(block).toContain('First observed: 2026-05-29T07:15:15Z');
+    expect(block).toContain(
+      'Class: Ekc/Beta-Gamma | Spots: 12 | Area: 480 millionths of the hemisphere',
+    );
+    expect(block).toContain('Flares on 2026-06-04: C=3 M=1 X=0');
+    // The probabilities are labelled as the following day's, apart from the tallies.
+    expect(block).toContain('Flare probability, following day: C=65% M=30% X=10% Proton=5%');
+  });
+
+  it('renders a spotless region as plage, not an empty class', async () => {
+    const result = await runWithRegions([mockRegion, spotlessRegion]);
+    const block = regionBlock((getSolarActivity.format!(result)[0] as { text: string }).text, 3780);
+
+    expect(block).toContain('Class: no spots (plage) | Area: none');
+    expect(block).not.toContain('Class: /');
+    expect(block).not.toContain('Spots: 0');
+    expect(block).not.toMatch(/null|undefined|NaN/);
+    // Its counts still render: zero is a real tally here.
+    expect(block).toContain('Flares on 2026-06-04: C=0 M=0 X=0');
+  });
+
+  it('keeps an empty region list and include_regions=false unchanged', async () => {
+    const empty = await runWithRegions([]);
+    expect(empty.activeRegions).toEqual([]);
+    expect((getSolarActivity.format!(empty)[0] as { text: string }).text).not.toContain(
+      'Active Solar Regions',
+    );
+
+    const svc = useSvc({ getSolarRegions: vi.fn().mockResolvedValue([mockRegion]) });
+    const skipped = await getSolarActivity.handler(
+      getSolarActivity.input.parse({ include_regions: false }),
+      createMockContext({ errors: getSolarActivity.errors }),
+    );
+    expect(skipped.activeRegions).toEqual([]);
+    expect(svc.getSolarRegions).not.toHaveBeenCalled();
   });
 });
