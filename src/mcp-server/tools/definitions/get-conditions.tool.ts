@@ -6,7 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
-import type { NoaaScaleEntry } from '@/services/space-weather/types.js';
+import type { NoaaScaleEntry, NoaaScalesPeriod } from '@/services/space-weather/types.js';
 
 // ── Output sub-schemas ──────────────────────────────────────────────────────
 
@@ -93,6 +93,23 @@ const ForecastPeriodSchema = z
   })
   .describe('One day of the NOAA scale forecast series.');
 
+const YesterdaySchema = z
+  .object({
+    date: z
+      .string()
+      .describe('The previous UTC calendar day these levels were assessed for, e.g. "2026-06-03".'),
+    G: ScaleSummarySchema.describe(
+      'Geomagnetic storm level SWPC assessed for the previous UTC day.',
+    ),
+    R: ScaleSummarySchema.describe('Radio blackout level SWPC assessed for the previous UTC day.'),
+    S: ScaleSummarySchema.describe(
+      'Solar radiation storm level SWPC assessed for the previous UTC day.',
+    ),
+  })
+  .describe(
+    'NOAA R/S/G levels SWPC assessed for the previous UTC day. Carries a date and no time: the feed states when it was generated, not when that day was observed.',
+  );
+
 const DiscussionSchema = z
   .object({
     issued: z
@@ -138,6 +155,14 @@ function joinWords(words: (string | null | undefined)[]): string {
   return words.filter((word): word is string => Boolean(word)).join(' ');
 }
 
+/** One level on {@link ScaleSummarySchema}'s shape. */
+function scaleSummary(
+  entry: NoaaScaleEntry,
+  scale: number,
+): { label: string; scale: number; text: string } {
+  return { scale, text: entry.text ?? '', label: `${entry.category}${scale}` };
+}
+
 /**
  * Map a level-carrying entry onto {@link ScaleSummarySchema}, which declares `scale` as
  * a plain number: today's period and every forecast G entry do carry a real `Scale`
@@ -156,10 +181,28 @@ function observedScale(
 ): { label: string; scale: number; text: string } {
   if (entry.scale === null)
     throw fail(`SWPC scales feed issued no ${entry.category} level for the ${period} period.`);
+  return scaleSummary(entry, entry.scale);
+}
+
+/**
+ * The previous UTC day's assessed levels, from the period's `date` and its three
+ * `Scale`/`Text` pairs only. `time`/`observedAt` are never read: on this key they are
+ * the feed's generation clock, not an observation time.
+ *
+ * Null when the feed carries no such period, and also when it carries one missing a
+ * level. Unlike today's period — the snapshot's core, where a missing level fails the
+ * call as `feed_moved` — this one is supplementary, and a break in it must not take down
+ * today and the forecast with it. Null is never resolved to level 0.
+ */
+function assessedYesterday(period: NoaaScalesPeriod | null) {
+  if (!period) return null;
+  const { G, R, S } = period;
+  if (G.scale === null || R.scale === null || S.scale === null) return null;
   return {
-    scale: entry.scale,
-    text: entry.text ?? '',
-    label: `${entry.category}${entry.scale}`,
+    date: period.date,
+    G: scaleSummary(G, G.scale),
+    R: scaleSummary(R, R.scale),
+    S: scaleSummary(S, S.scale),
   };
 }
 
@@ -216,7 +259,7 @@ function stormPhrase(entry: NoaaScaleEntry, phenomenon: string): string | null {
 export const getConditions = tool('noaa_spaceweather_get_conditions', {
   title: 'Get Space Weather Conditions',
   description:
-    'Current space-weather snapshot: NOAA R/S/G storm scales (today + 3-day forecast), latest Kp ' +
+    'Current space-weather snapshot: NOAA R/S/G storm scales (the previous UTC day, today, and the 3-day forecast), latest Kp ' +
     'index with its G-scale equivalent and aurora-visibility latitude, and a plain-language status ' +
     'summary. Optionally includes the SWPC forecast discussion explaining what is driving the ' +
     'forecast. The quickest way to answer "is anything happening right now?" — use before deciding ' +
@@ -244,6 +287,9 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       .describe(
         'Aurora visibility guidance for current conditions, e.g. "Aurora possible to ~55° geomagnetic latitude".',
       ),
+    yesterday: YesterdaySchema.nullable().describe(
+      'NOAA R/S/G levels SWPC assessed for the previous UTC day — answers what happened yesterday without a history call. Null when the scales feed carries no previous-day period, or carries one missing a level; null never means level 0.',
+    ),
     today: z
       .object({
         G: ScaleSummarySchema.describe("Today's geomagnetic storm scale."),
@@ -270,7 +316,7 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
     {
       reason: 'feed_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried before failing.',
+      when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried for up to 45 seconds in total before failing.',
       retryable: true,
       thrownBy: 'service',
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
@@ -345,6 +391,7 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       currentKp,
       currentGScale,
       auroraLatitude,
+      yesterday: assessedYesterday(scales.yesterday),
       today: {
         G: observedScale(today.G, 'today', failOnMissingLevel),
         R: observedScale(today.R, 'today', failOnMissingLevel),
@@ -372,6 +419,18 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
   format: (result) => {
     /** Normalize scale text: empty string or NOAA's literal "none" → "—". */
     const scaleText = (t: string) => (t && t.toLowerCase() !== 'none' ? t : '—');
+    /** The three G/R/S lines of one level-carrying period. */
+    const levelLines = (period: typeof result.today) =>
+      (
+        [
+          ['Geomagnetic (G)', period.G],
+          ['Radio Blackout (R)', period.R],
+          ['Solar Radiation (S)', period.S],
+        ] as const
+      ).map(
+        ([name, level]) =>
+          `- **${name}:** ${level.label} (scale ${level.scale}) ${scaleText(level.text)}`,
+      );
 
     const lines: string[] = [];
     lines.push(`## Space Weather Conditions — ${result.observedAt} UTC`);
@@ -382,16 +441,16 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       `**Current Kp:** ${result.currentKp} | **G-scale:** ${result.currentGScale} — ${result.auroraLatitude}`,
     );
     lines.push('');
+    if (result.yesterday) {
+      lines.push(`### Yesterday (${result.yesterday.date}, assessed)`);
+      lines.push(...levelLines(result.yesterday));
+    } else {
+      lines.push('### Yesterday');
+      lines.push('_The scales feed carried no assessed levels for the previous UTC day._');
+    }
+    lines.push('');
     lines.push('### Today');
-    lines.push(
-      `- **Geomagnetic (G):** ${result.today.G.label} (scale ${result.today.G.scale}) ${scaleText(result.today.G.text)}`,
-    );
-    lines.push(
-      `- **Radio Blackout (R):** ${result.today.R.label} (scale ${result.today.R.scale}) ${scaleText(result.today.R.text)}`,
-    );
-    lines.push(
-      `- **Solar Radiation (S):** ${result.today.S.label} (scale ${result.today.S.scale}) ${scaleText(result.today.S.text)}`,
-    );
+    lines.push(...levelLines(result.today));
     if (result.forecast.length > 0) {
       lines.push('');
       lines.push('### 3-Day Forecast (starts today)');

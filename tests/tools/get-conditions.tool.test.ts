@@ -50,6 +50,7 @@ function makeScalesData(gScale = 0, rScale = 0, sScale = 0): NoaaScalesData {
     S: forecastEntry('S', 1, null),
   });
   return {
+    yesterday: null,
     today: period('2026-06-04'),
     forecast: [forecastPeriod('2026-06-05'), forecastPeriod('2026-06-06')],
   };
@@ -148,6 +149,7 @@ describe('getConditions', () => {
       currentKp: 3,
       currentGScale: 0,
       auroraLatitude: 'No significant aurora expected at mid-latitudes',
+      yesterday: null,
       today: {
         G: { scale: 0, text: '', label: 'G0' },
         R: { scale: 0, text: '', label: 'R0' },
@@ -184,6 +186,7 @@ describe('getConditions', () => {
       currentKp: 0,
       currentGScale: 0,
       auroraLatitude: 'No significant aurora expected at mid-latitudes',
+      yesterday: null,
       today: {
         G: { scale: 0, text: 'none', label: 'G0' }, // NOAA feed literal
         R: { scale: 0, text: '', label: 'R0' }, // empty string fallback
@@ -220,6 +223,7 @@ describe('getConditions', () => {
   it('includes forecast storm in summary when current conditions are quiet (issue #2)', async () => {
     // Today is quiet, but G3 forecast for the next day
     const scalesWithForecast: import('@/services/space-weather/types.js').NoaaScalesData = {
+      yesterday: null,
       today: {
         date: '2026-06-04',
         time: '15:00:00',
@@ -269,6 +273,7 @@ function makeProbabilityForecastScales(): NoaaScalesData {
     majorProb: null,
   });
   return {
+    yesterday: null,
     today: {
       date: '2026-09-17',
       time: '17:13:00',
@@ -457,6 +462,106 @@ describe('getConditions level-carrying scales are never inferred (#23)', () => {
       message: expect.stringContaining('2026-06-06'),
     });
   });
+});
+
+/**
+ * The previous UTC day's period as the service hands it over. Its `time` is the feed's
+ * generation clock — the same "22:38:00" key "0" carries on a live draw — so a value
+ * derived from it would be a fabricated observation time.
+ */
+function makeYesterdayPeriod(): NonNullable<NoaaScalesData['yesterday']> {
+  return {
+    date: '2026-06-03',
+    time: '22:38:00',
+    observedAt: '2026-06-03T22:38:00Z',
+    G: { category: 'G', scale: 2, text: 'moderate', minorProb: null, majorProb: null },
+    R: { category: 'R', scale: 1, text: 'minor', minorProb: null, majorProb: null },
+    S: { category: 'S', scale: 0, text: 'none', minorProb: null, majorProb: null },
+  };
+}
+
+describe('getConditions yesterday (#34)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function runWith(yesterday: NoaaScalesData['yesterday']) {
+    mockGetSpaceWeatherService.mockReturnValue({
+      getNoaaScales: vi.fn().mockResolvedValue({ ...makeScalesData(), yesterday }),
+      getKpObserved: vi.fn().mockResolvedValue(makeKpObservations(1)),
+    } as never);
+    const ctx = createMockContext({ errors: getConditions.errors });
+    return getConditions.handler(getConditions.input.parse({}), ctx);
+  }
+
+  /** The Yesterday section of the rendered text, up to the Today heading. */
+  function yesterdaySection(text: string): string {
+    return text.slice(text.indexOf('### Yesterday'), text.indexOf('### Today'));
+  }
+
+  it('reports the previous UTC day in structuredContent, in the today shape plus its date', async () => {
+    const result = await runWith(makeYesterdayPeriod());
+
+    expect(result.yesterday).toEqual({
+      date: '2026-06-03',
+      G: { scale: 2, text: 'moderate', label: 'G2' },
+      R: { scale: 1, text: 'minor', label: 'R1' },
+      S: { scale: 0, text: 'none', label: 'S0' },
+    });
+    expect(getConditions.output.parse(result).yesterday).toEqual(result.yesterday);
+    // Today is untouched by the extra period.
+    expect(result.today.G.label).toBe('G0');
+  });
+
+  it('renders every previous-day level in content[]', async () => {
+    const result = await runWith(makeYesterdayPeriod());
+    const section = yesterdaySection((getConditions.format!(result)[0] as { text: string }).text);
+
+    expect(section).toContain('### Yesterday (2026-06-03, assessed)');
+    expect(section).toContain('**Geomagnetic (G):** G2 (scale 2) moderate');
+    expect(section).toContain('**Radio Blackout (R):** R1 (scale 1) minor');
+    expect(section).toContain('**Solar Radiation (S):** S0 (scale 0) —');
+  });
+
+  it('never derives a time from the period TimeStamp, on either surface', async () => {
+    const result = await runWith(makeYesterdayPeriod());
+    const section = yesterdaySection((getConditions.format!(result)[0] as { text: string }).text);
+
+    expect(Object.keys(result.yesterday ?? {})).toEqual(['date', 'G', 'R', 'S']);
+    expect(JSON.stringify(result.yesterday)).not.toContain('22:38');
+    expect(section).not.toContain('22:38');
+    // The levels come from Scale/Text: a TimeStamp change leaves them identical.
+    const shifted = await runWith({
+      ...makeYesterdayPeriod(),
+      time: '05:00:00',
+      observedAt: '2026-06-03T05:00:00Z',
+    });
+    expect(shifted.yesterday).toEqual(result.yesterday);
+  });
+
+  it('reports null, on both surfaces, when the feed carries no previous-day period', async () => {
+    const result = await runWith(null);
+
+    expect(result.yesterday).toBeNull();
+    expect(getConditions.output.parse(result).yesterday).toBeNull();
+    const section = yesterdaySection((getConditions.format!(result)[0] as { text: string }).text);
+    expect(section).toContain('carried no assessed levels for the previous UTC day');
+    expect(section).not.toMatch(/scale \d/);
+  });
+
+  it.each(['G', 'R', 'S'] as const)(
+    'reports null rather than level 0 when the previous day is missing its %s level, leaving today intact',
+    async (category) => {
+      const period = makeYesterdayPeriod();
+      period[category] = { ...period[category], scale: null, text: null };
+
+      const result = await runWith(period);
+
+      expect(result.yesterday).toBeNull();
+      expect(result.today[category].scale).toBe(0);
+      expect(result.forecast).toHaveLength(2);
+    },
+  );
 });
 
 const DISCUSSION = {
