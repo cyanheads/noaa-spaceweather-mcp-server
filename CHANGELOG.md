@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-09-22
+
+Aurora forecast gates the go/no-go verdict on daylight at the requested coordinates and adds a poleward horizon reading for aurora visible below the local horizon.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-09-17 · ⚠️ Breaking
 
 Forecast R/S probabilities replace a phantom scale 0, discrete flare history and F10.7 flux, solar wind series bounded to 200 records, and an optional SWPC forecast discussion.
