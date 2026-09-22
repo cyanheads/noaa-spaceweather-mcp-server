@@ -1,0 +1,1373 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`tool output schemas > noaa_spaceweather_get_alerts keeps its advertised shape (keys, types, required, enums) 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activeOnly": {
+      "type": "boolean",
+    },
+    "alerts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+          },
+          "issueDatetime": {
+            "type": "string",
+          },
+          "level": {
+            "type": "number",
+          },
+          "message": {
+            "type": "string",
+          },
+          "messageCode": {
+            "type": "string",
+          },
+          "noaaScale": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "phenomenon": {
+            "type": "string",
+          },
+          "productId": {
+            "type": "string",
+          },
+          "productType": {
+            "enum": [
+              "Warning",
+              "Watch",
+              "Alert",
+              "Summary",
+              "Other",
+            ],
+            "type": "string",
+          },
+          "serialNumber": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "validFrom": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "validTo": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+        },
+        "required": [
+          "productId",
+          "messageCode",
+          "productType",
+          "level",
+          "noaaScale",
+          "cancelled",
+          "serialNumber",
+          "phenomenon",
+          "issueDatetime",
+          "validFrom",
+          "validTo",
+          "message",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "appliedCutoff": {
+      "type": "string",
+    },
+    "appliedWindowHours": {
+      "type": "number",
+    },
+    "exclusions": {
+      "additionalProperties": false,
+      "properties": {
+        "agedOut": {
+          "type": "number",
+        },
+        "cancellationRecord": {
+          "type": "number",
+        },
+        "cancelledBySerial": {
+          "type": "number",
+        },
+        "productType": {
+          "type": "number",
+        },
+        "superseded": {
+          "type": "number",
+        },
+        "validityElapsed": {
+          "type": "number",
+        },
+      },
+      "required": [
+        "agedOut",
+        "productType",
+        "cancellationRecord",
+        "cancelledBySerial",
+        "superseded",
+        "validityElapsed",
+      ],
+      "type": "object",
+    },
+    "fetchedAt": {
+      "type": "string",
+    },
+    "notice": {
+      "type": "string",
+    },
+    "totalCount": {
+      "type": "number",
+    },
+  },
+  "required": [
+    "alerts",
+    "totalCount",
+    "activeOnly",
+    "fetchedAt",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool output schemas > noaa_spaceweather_get_aurora_forecast keeps its advertised shape (keys, types, required, enums) 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "forecastTime": {
+      "type": "string",
+    },
+    "gridPointCount": {
+      "type": "number",
+    },
+    "localLookup": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "auroraPercent": {
+              "type": "number",
+            },
+            "darkness": {
+              "enum": [
+                "day",
+                "civil_twilight",
+                "nautical_twilight",
+                "dark",
+              ],
+              "type": "string",
+            },
+            "geomagneticLatitude": {
+              "type": "number",
+            },
+            "gridLatitude": {
+              "type": "number",
+            },
+            "gridLongitude": {
+              "type": "number",
+            },
+            "horizonDistanceKm": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "horizonMaxLatitude": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "horizonMaxPercent": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "minGScale": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "minKpRequired": {
+              "type": "number",
+            },
+            "requestedLatitude": {
+              "type": "number",
+            },
+            "requestedLongitude": {
+              "type": "number",
+            },
+            "sunElevationDeg": {
+              "type": "number",
+            },
+            "verdict": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "requestedLatitude",
+            "requestedLongitude",
+            "geomagneticLatitude",
+            "gridLatitude",
+            "gridLongitude",
+            "auroraPercent",
+            "minKpRequired",
+            "minGScale",
+            "sunElevationDeg",
+            "darkness",
+            "horizonMaxPercent",
+            "horizonMaxLatitude",
+            "horizonDistanceKm",
+            "verdict",
+          ],
+          "type": "object",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+    "observationTime": {
+      "type": "string",
+    },
+    "topAuroraPercent": {
+      "type": "number",
+    },
+    "topAuroraRegion": {
+      "type": "string",
+    },
+  },
+  "required": [
+    "observationTime",
+    "forecastTime",
+    "localLookup",
+    "gridPointCount",
+    "topAuroraPercent",
+    "topAuroraRegion",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool output schemas > noaa_spaceweather_get_conditions keeps its advertised shape (keys, types, required, enums) 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "auroraLatitude": {
+      "type": "string",
+    },
+    "currentGScale": {
+      "type": "number",
+    },
+    "currentKp": {
+      "type": "number",
+    },
+    "discussion": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "issued": {
+              "type": [
+                "string",
+                "null",
+              ],
+            },
+            "sections": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "forecast": {
+                    "type": [
+                      "string",
+                      "null",
+                    ],
+                  },
+                  "summary": {
+                    "type": [
+                      "string",
+                      "null",
+                    ],
+                  },
+                  "topic": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "topic",
+                  "summary",
+                  "forecast",
+                ],
+                "type": "object",
+              },
+              "type": "array",
+            },
+          },
+          "required": [
+            "issued",
+            "sections",
+          ],
+          "type": "object",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+    "forecast": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "G": {
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string",
+              },
+              "scale": {
+                "type": "number",
+              },
+              "text": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "scale",
+              "text",
+              "label",
+            ],
+            "type": "object",
+          },
+          "R": {
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": [
+                  "string",
+                  "null",
+                ],
+              },
+              "majorProbPercent": {
+                "type": [
+                  "number",
+                  "null",
+                ],
+              },
+              "minorProbPercent": {
+                "type": [
+                  "number",
+                  "null",
+                ],
+              },
+              "scale": {
+                "type": [
+                  "number",
+                  "null",
+                ],
+              },
+              "text": {
+                "type": [
+                  "string",
+                  "null",
+                ],
+              },
+            },
+            "required": [
+              "scale",
+              "text",
+              "label",
+              "minorProbPercent",
+              "majorProbPercent",
+            ],
+            "type": "object",
+          },
+          "S": {
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": [
+                  "string",
+                  "null",
+                ],
+              },
+              "probPercent": {
+                "type": [
+                  "number",
+                  "null",
+                ],
+              },
+              "scale": {
+                "type": [
+                  "number",
+                  "null",
+                ],
+              },
+              "text": {
+                "type": [
+                  "string",
+                  "null",
+                ],
+              },
+            },
+            "required": [
+              "scale",
+              "text",
+              "label",
+              "probPercent",
+            ],
+            "type": "object",
+          },
+          "date": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "date",
+          "G",
+          "R",
+          "S",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "observedAt": {
+      "type": "string",
+    },
+    "summary": {
+      "type": "string",
+    },
+    "today": {
+      "additionalProperties": false,
+      "properties": {
+        "G": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string",
+            },
+            "scale": {
+              "type": "number",
+            },
+            "text": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "scale",
+            "text",
+            "label",
+          ],
+          "type": "object",
+        },
+        "R": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string",
+            },
+            "scale": {
+              "type": "number",
+            },
+            "text": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "scale",
+            "text",
+            "label",
+          ],
+          "type": "object",
+        },
+        "S": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string",
+            },
+            "scale": {
+              "type": "number",
+            },
+            "text": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "scale",
+            "text",
+            "label",
+          ],
+          "type": "object",
+        },
+      },
+      "required": [
+        "G",
+        "R",
+        "S",
+      ],
+      "type": "object",
+    },
+    "yesterday": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "G": {
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string",
+                },
+                "scale": {
+                  "type": "number",
+                },
+                "text": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "scale",
+                "text",
+                "label",
+              ],
+              "type": "object",
+            },
+            "R": {
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string",
+                },
+                "scale": {
+                  "type": "number",
+                },
+                "text": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "scale",
+                "text",
+                "label",
+              ],
+              "type": "object",
+            },
+            "S": {
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string",
+                },
+                "scale": {
+                  "type": "number",
+                },
+                "text": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "scale",
+                "text",
+                "label",
+              ],
+              "type": "object",
+            },
+            "date": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "date",
+            "G",
+            "R",
+            "S",
+          ],
+          "type": "object",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+  },
+  "required": [
+    "observedAt",
+    "currentKp",
+    "currentGScale",
+    "auroraLatitude",
+    "yesterday",
+    "today",
+    "forecast",
+    "summary",
+    "discussion",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool output schemas > noaa_spaceweather_get_kp_index keeps its advertised shape (keys, types, required, enums) 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "auroraLatitude": {
+      "type": "string",
+    },
+    "currentGScale": {
+      "type": "number",
+    },
+    "currentKp": {
+      "type": "number",
+    },
+    "forecast": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "gLabel": {
+            "type": "string",
+          },
+          "gScale": {
+            "type": "number",
+          },
+          "kp": {
+            "type": "number",
+          },
+          "noaaScale": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "observed": {
+            "type": "string",
+          },
+          "timeTag": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "timeTag",
+          "kp",
+          "observed",
+          "noaaScale",
+          "gScale",
+          "gLabel",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "observed": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "auroraLatitude": {
+            "type": "string",
+          },
+          "gLabel": {
+            "type": "string",
+          },
+          "gScale": {
+            "type": "number",
+          },
+          "kp": {
+            "type": "number",
+          },
+          "timeTag": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "timeTag",
+          "kp",
+          "gScale",
+          "gLabel",
+          "auroraLatitude",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "observedCount": {
+      "type": "number",
+    },
+  },
+  "required": [
+    "observed",
+    "forecast",
+    "currentKp",
+    "currentGScale",
+    "auroraLatitude",
+    "observedCount",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool output schemas > noaa_spaceweather_get_solar_activity keeps its advertised shape (keys, types, required, enums) 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activeRegions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "areaMillionths": {
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "cFlareCount": {
+            "type": "number",
+          },
+          "cFlareProbability": {
+            "type": "number",
+          },
+          "firstObserved": {
+            "type": "string",
+          },
+          "latitude": {
+            "type": "string",
+          },
+          "location": {
+            "type": "string",
+          },
+          "mFlareCount": {
+            "type": "number",
+          },
+          "mFlareProbability": {
+            "type": "number",
+          },
+          "magClass": {
+            "type": "string",
+          },
+          "numberSpots": {
+            "type": "number",
+          },
+          "observedDate": {
+            "type": "string",
+          },
+          "protonProbability": {
+            "type": "number",
+          },
+          "region": {
+            "type": "number",
+          },
+          "spotClass": {
+            "type": "string",
+          },
+          "xFlareCount": {
+            "type": "number",
+          },
+          "xFlareProbability": {
+            "type": "number",
+          },
+        },
+        "required": [
+          "region",
+          "location",
+          "latitude",
+          "spotClass",
+          "numberSpots",
+          "magClass",
+          "areaMillionths",
+          "firstObserved",
+          "cFlareCount",
+          "mFlareCount",
+          "xFlareCount",
+          "cFlareProbability",
+          "mFlareProbability",
+          "xFlareProbability",
+          "protonProbability",
+          "observedDate",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "f107": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fluxSfu": {
+              "type": "number",
+            },
+            "ninetyDayMeanSfu": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "observedTime": {
+              "type": "string",
+            },
+            "reportingSchedule": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "observedTime",
+            "fluxSfu",
+            "ninetyDayMeanSfu",
+            "reportingSchedule",
+          ],
+          "type": "object",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+    "fetchedAt": {
+      "type": "string",
+    },
+    "latestProton": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "energy": {
+              "type": "string",
+            },
+            "fluxPfu": {
+              "type": "number",
+            },
+            "sScale": {
+              "type": "number",
+            },
+            "timeTag": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "timeTag",
+            "fluxPfu",
+            "sScale",
+            "energy",
+          ],
+          "type": "object",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+    "latestXray": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "flareClass": {
+              "type": "string",
+            },
+            "flareClassFull": {
+              "type": [
+                "string",
+                "null",
+              ],
+            },
+            "fluxWm2": {
+              "type": "string",
+            },
+            "fluxWm2Value": {
+              "type": "number",
+            },
+            "satellite": {
+              "type": "number",
+            },
+            "timeTag": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "timeTag",
+            "fluxWm2",
+            "fluxWm2Value",
+            "flareClass",
+            "flareClassFull",
+            "satellite",
+          ],
+          "type": "object",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+    "notice": {
+      "type": "string",
+    },
+    "probabilities": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "cClass1Day": {
+            "type": "number",
+          },
+          "cClassProbability": {
+            "type": "number",
+          },
+          "date": {
+            "type": "string",
+          },
+          "mClass1Day": {
+            "type": "number",
+          },
+          "mClassProbability": {
+            "type": "number",
+          },
+          "protonEventProbability": {
+            "type": "number",
+          },
+          "protons1Day": {
+            "type": "number",
+          },
+          "xClass1Day": {
+            "type": "number",
+          },
+          "xClassProbability": {
+            "type": "number",
+          },
+        },
+        "required": [
+          "date",
+          "cClass1Day",
+          "cClassProbability",
+          "mClass1Day",
+          "mClassProbability",
+          "xClass1Day",
+          "xClassProbability",
+          "protons1Day",
+          "protonEventProbability",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "recentFlares": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "beginClass": {
+            "type": "string",
+          },
+          "beginTime": {
+            "type": "string",
+          },
+          "endClass": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "endTime": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "maxClass": {
+            "type": "string",
+          },
+          "maxTime": {
+            "type": "string",
+          },
+          "peakFluxWm2": {
+            "type": "number",
+          },
+          "rScale": {
+            "type": "number",
+          },
+          "satellite": {
+            "type": "number",
+          },
+        },
+        "required": [
+          "beginTime",
+          "maxTime",
+          "endTime",
+          "beginClass",
+          "maxClass",
+          "endClass",
+          "peakFluxWm2",
+          "rScale",
+          "satellite",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "recentXray": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "flareClass": {
+            "type": "string",
+          },
+          "flareClassFull": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "fluxWm2": {
+            "type": "string",
+          },
+          "fluxWm2Value": {
+            "type": "number",
+          },
+          "satellite": {
+            "type": "number",
+          },
+          "timeTag": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "timeTag",
+          "fluxWm2",
+          "fluxWm2Value",
+          "flareClass",
+          "flareClassFull",
+          "satellite",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "sScale": {
+      "type": "number",
+    },
+    "sScaleText": {
+      "type": "string",
+    },
+  },
+  "required": [
+    "latestXray",
+    "recentXray",
+    "recentFlares",
+    "f107",
+    "probabilities",
+    "latestProton",
+    "sScale",
+    "sScaleText",
+    "activeRegions",
+    "fetchedAt",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool output schemas > noaa_spaceweather_get_solar_wind keeps its advertised shape (keys, types, required, enums) 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "btMaxInWindow": {
+      "type": [
+        "number",
+        "null",
+      ],
+    },
+    "bzMinInWindow": {
+      "type": [
+        "number",
+        "null",
+      ],
+    },
+    "bzMinTimeTag": {
+      "type": [
+        "string",
+        "null",
+      ],
+    },
+    "bzSouthMinutesInWindow": {
+      "type": "number",
+    },
+    "bzStatus": {
+      "type": "string",
+    },
+    "densityMaxInWindow": {
+      "type": [
+        "number",
+        "null",
+      ],
+    },
+    "feedStalenessHours": {
+      "type": [
+        "number",
+        "null",
+      ],
+    },
+    "latestFeedMagTime": {
+      "type": [
+        "string",
+        "null",
+      ],
+    },
+    "latestFeedPlasmaTime": {
+      "type": [
+        "string",
+        "null",
+      ],
+    },
+    "latestMag": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bt": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "bxGsm": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "byGsm": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "bzGsm": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "source": {
+              "type": "string",
+            },
+            "timeTag": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "timeTag",
+            "source",
+            "bxGsm",
+            "byGsm",
+            "bzGsm",
+            "bt",
+          ],
+          "type": "object",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+    "latestPlasma": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "densityPerCm3": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "source": {
+              "type": "string",
+            },
+            "speedKmS": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "temperatureK": {
+              "type": [
+                "number",
+                "null",
+              ],
+            },
+            "timeTag": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "timeTag",
+            "source",
+            "densityPerCm3",
+            "speedKmS",
+            "temperatureK",
+          ],
+          "type": "object",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+    "mag": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "bt": {
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "bxGsm": {
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "byGsm": {
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "bzGsm": {
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "source": {
+            "type": "string",
+          },
+          "timeTag": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "timeTag",
+          "source",
+          "bxGsm",
+          "byGsm",
+          "bzGsm",
+          "bt",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "magBucketRecords": {
+      "type": "number",
+    },
+    "magCount": {
+      "type": "number",
+    },
+    "magWindowRecords": {
+      "type": "number",
+    },
+    "notice": {
+      "type": "string",
+    },
+    "plasma": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "densityPerCm3": {
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "source": {
+            "type": "string",
+          },
+          "speedKmS": {
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "temperatureK": {
+            "type": [
+              "number",
+              "null",
+            ],
+          },
+          "timeTag": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "timeTag",
+          "source",
+          "densityPerCm3",
+          "speedKmS",
+          "temperatureK",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "plasmaBucketRecords": {
+      "type": "number",
+    },
+    "plasmaCount": {
+      "type": "number",
+    },
+    "plasmaWindowRecords": {
+      "type": "number",
+    },
+    "speedMaxInWindow": {
+      "type": [
+        "number",
+        "null",
+      ],
+    },
+    "speedMaxTimeTag": {
+      "type": [
+        "string",
+        "null",
+      ],
+    },
+  },
+  "required": [
+    "plasma",
+    "mag",
+    "latestPlasma",
+    "latestMag",
+    "bzStatus",
+    "plasmaCount",
+    "magCount",
+    "bzMinInWindow",
+    "bzMinTimeTag",
+    "bzSouthMinutesInWindow",
+    "speedMaxInWindow",
+    "speedMaxTimeTag",
+    "densityMaxInWindow",
+    "btMaxInWindow",
+    "latestFeedPlasmaTime",
+    "latestFeedMagTime",
+    "feedStalenessHours",
+  ],
+  "type": "object",
+}
+`;

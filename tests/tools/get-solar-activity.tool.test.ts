@@ -3,6 +3,7 @@
  * @module tests/tools/get-solar-activity.tool.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
@@ -434,6 +435,72 @@ describe('getSolarActivity', () => {
     // concrete values flow through from the fixture
     expect(result.probabilities[0]!.cClassProbability).toBe(55);
     expect(result.probabilities[0]!.protonEventProbability).toBe(5);
+  });
+
+  it('renders each forecast day under the date-neutral probability names in content[]', async () => {
+    useSvc({ getSolarProbabilities: vi.fn().mockResolvedValue(mockProbabilities) });
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const result = await getSolarActivity.handler(getSolarActivity.input.parse({}), ctx);
+    const text = (getSolarActivity.format!(result)[0] as { text: string }).text;
+
+    expect(text).toContain('### Flare Probabilities (3-day forecast)');
+    expect(text).toContain('**2026-06-04:** C=55% | M=20% | X=5% | Proton=5%');
+    expect(text).toContain('**2026-06-05:** C=50% | M=15% | X=3% | Proton=3%');
+  });
+
+  it('renders no legacy *1Day line per forecast day (#40)', async () => {
+    useSvc({ getSolarProbabilities: vi.fn().mockResolvedValue(mockProbabilities) });
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const result = await getSolarActivity.handler(getSolarActivity.input.parse({}), ctx);
+    const text = (getSolarActivity.format!(result)[0] as { text: string }).text;
+
+    expect(text).not.toContain('legacy');
+    expect(text).not.toMatch(/cClass1Day|mClass1Day|xClass1Day|protons1Day/);
+    // structuredContent still carries the deprecated fields.
+    expect(result.probabilities[0]).toMatchObject({
+      cClass1Day: 55,
+      mClass1Day: 20,
+      xClass1Day: 5,
+      protons1Day: 5,
+    });
+  });
+
+  it('renders a deprecated *1Day value only when it disagrees with its alias (#40)', async () => {
+    const [first, second] = mockProbabilities as [SolarProbabilities, SolarProbabilities];
+    useSvc({
+      getSolarProbabilities: vi
+        .fn()
+        .mockResolvedValue([{ ...first, mClass1Day: 21, protons1Day: 6 }, second]),
+    });
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const result = await getSolarActivity.handler(getSolarActivity.input.parse({}), ctx);
+    const text = (getSolarActivity.format!(result)[0] as { text: string }).text;
+
+    expect(text).toContain(
+      '**2026-06-04:** C=55% | M=20% | X=5% | Proton=5%\n  (deprecated, differs: mClass1Day=21% protons1Day=6%)',
+    );
+    // The agreeing day renders no deprecated line at all.
+    expect(text.match(/deprecated/g)).toHaveLength(1);
+  });
+
+  it('describes each *1Day field as deprecated and names its date-neutral alias (#40)', () => {
+    const schema = z.toJSONSchema(getSolarActivity.output) as unknown as {
+      properties: {
+        probabilities: { items: { properties: Record<string, { description?: string }> } };
+      };
+    };
+    const fields = schema.properties.probabilities.items.properties;
+    const aliases = {
+      cClass1Day: 'cClassProbability',
+      mClass1Day: 'mClassProbability',
+      xClass1Day: 'xClassProbability',
+      protons1Day: 'protonEventProbability',
+    };
+    for (const [legacy, alias] of Object.entries(aliases)) {
+      expect(fields[legacy]?.description).toMatch(/^Deprecated/);
+      expect(fields[legacy]?.description).toContain(alias);
+      expect(fields[alias]?.description).not.toMatch(/deprecated/i);
+    }
   });
 
   it('excludes an X-ray reading whose true time is just before the past-hour cutoff, where string compare would wrongly include it (#17)', async () => {
