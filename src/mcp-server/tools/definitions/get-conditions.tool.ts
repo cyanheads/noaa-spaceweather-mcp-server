@@ -272,6 +272,7 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: 'SWPC feed returns 5xx or 429, times out, or answers with a body that is not parseable JSON. Retried before failing.',
       retryable: true,
+      thrownBy: 'service',
       recovery: 'Retry in 30–60 seconds; SWPC feeds occasionally lag during high-activity events.',
     },
     {
