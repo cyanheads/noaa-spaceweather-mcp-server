@@ -151,7 +151,7 @@ export interface AuroraGridPoint {
   auroraPercent: number;
   /** Latitude −90–90. */
   latitude: number;
-  /** Longitude −180–180. */
+  /** Longitude −179–180: the feed's 0–359 normalized, so there is a 180 column and no −180 one. */
   longitude: number;
 }
 

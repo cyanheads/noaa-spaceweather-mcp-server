@@ -25,6 +25,7 @@ import { getKpIndex } from '@/mcp-server/tools/definitions/get-kp-index.tool.js'
 import { getSolarActivity } from '@/mcp-server/tools/definitions/get-solar-activity.tool.js';
 import { getSolarWind } from '@/mcp-server/tools/definitions/get-solar-wind.tool.js';
 import { initSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
+import { OVATION_SNAPSHOT_SLICE } from '../fixtures/ovation-snapshot-slice.js';
 import { SWPC_DISCUSSION } from '../fixtures/swpc-discussion.js';
 
 /** The `CallToolResult` a client receives — the MCP SDK type, via the runner's own return. */
@@ -589,6 +590,87 @@ describe('fail-fast and neighbouring-error regressions', () => {
     expect(textOf(result)).toContain(`Recovery: ${hint}`);
     // The coordinate check runs before any feed call.
     expect(attemptsFor(AURORA_PATH)).toBe(0);
+  });
+});
+
+/**
+ * The aurora local lookup through the real service and the full tool contract: the raw
+ * feed's 0–359 longitudes are normalized before the nearest-cell and poleward scans,
+ * the new darkness and horizon fields survive output-schema validation, and
+ * `format()` carries them to `content[]`. The feed body is a slice of a live draw.
+ */
+describe('get_aurora_forecast local lookup through the real service (#36, #37)', () => {
+  type LocalLookup = {
+    auroraPercent: number;
+    darkness: string;
+    gridLongitude: number;
+    horizonDistanceKm: number | null;
+    horizonMaxLatitude: number | null;
+    horizonMaxPercent: number | null;
+    sunElevationDeg: number;
+    verdict: string;
+  };
+
+  function lookupOf(result: ToolResult): LocalLookup {
+    expect(result.isError).toBeFalsy();
+    return (result.structuredContent as { localLookup: LocalLookup }).localLookup;
+  }
+
+  it('reports a dark sky and the horizon reading 984 km north of an empty overhead cell', async () => {
+    installFetch(AURORA_PATH, () => Promise.resolve(Response.json(OVATION_SNAPSHOT_SLICE)));
+    const result = await runToolContract(getAuroraForecast, { latitude: 58.15, longitude: 8 });
+    const l = lookupOf(result);
+
+    expect(l.darkness).toBe('dark');
+    expect(l.sunElevationDeg).toBeLessThan(-12);
+    expect(l.auroraPercent).toBe(0);
+    expect(l.gridLongitude).toBe(8);
+    expect(l.horizonMaxPercent).toBe(11);
+    expect(l.horizonMaxLatitude).toBe(67);
+    expect(l.horizonDistanceKm).toBe(984);
+    expect(l.verdict).toContain(
+      '0% overhead; 11% about 984 km north — aurora may be visible low on the northern horizon.',
+    );
+
+    const text = textOf(result);
+    expect(text).toContain(`${l.sunElevationDeg}°`);
+    expect(text).toContain('(dark)');
+    expect(text).toContain('11% at 67° latitude, 984 km away');
+    expect(text).toContain(l.verdict);
+    expect(attemptsFor(AURORA_PATH)).toBe(1);
+  });
+
+  it('reports daylight at a sunlit cell the model reads non-zero', async () => {
+    installFetch(AURORA_PATH, () => Promise.resolve(Response.json(OVATION_SNAPSHOT_SLICE)));
+    const result = await runToolContract(getAuroraForecast, { latitude: -64, longitude: 157 });
+    const l = lookupOf(result);
+
+    expect(l.darkness).toBe('day');
+    expect(l.sunElevationDeg).toBeGreaterThan(0);
+    expect(l.auroraPercent).toBeGreaterThan(0);
+    expect(l.horizonMaxPercent).not.toBeNull();
+    expect(l.verdict).toMatch(/^Not visible — daylight at the forecast time/);
+    expect(l.verdict).not.toMatch(/%|overhead/);
+    expect(textOf(result)).toContain('(day)');
+  });
+
+  it('produces feed_moved in one attempt when a coordinate lookup finds no Forecast Time', async () => {
+    const { 'Forecast Time': _dropped, ...withoutForecastTime } = OVATION_SNAPSHOT_SLICE;
+    const result = await callWithFailure(
+      getAuroraForecast,
+      { latitude: 58.15, longitude: 8 },
+      AURORA_PATH,
+      () => Promise.resolve(Response.json(withoutForecastTime)),
+    );
+    const error = errorOf(result);
+    const hint = declaredRecovery(getAuroraForecast, 'feed_moved');
+
+    expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+    expect(error.data?.reason).toBe('feed_moved');
+    expect(error.data?.recovery).toEqual({ hint });
+    expect(textOf(result)).toContain(`Recovery: ${hint}`);
+    expect(textOf(result)).toContain('Forecast Time');
+    expect(attemptsFor(AURORA_PATH)).toBe(1);
   });
 });
 

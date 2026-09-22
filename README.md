@@ -37,7 +37,7 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 |:-----|:------------|
 | `noaa_spaceweather_get_conditions` | Current space-weather snapshot: NOAA R/S/G storm scales, latest Kp, a plain-language status summary, and optionally SWPC's forecast discussion explaining the forecast |
 | `noaa_spaceweather_get_kp_index` | Planetary K-index (0–9) — recent observed 3-hour values with G-scale equivalents and aurora-latitude guidance, plus 3-day forecast |
-| `noaa_spaceweather_get_aurora_forecast` | OVATION model aurora forecast: global probability grid, optional local lookup by coordinates with go/no-go verdict |
+| `noaa_spaceweather_get_aurora_forecast` | OVATION model aurora forecast: global probability grid, optional local lookup by coordinates with a daylight-aware go/no-go verdict and a poleward horizon reading |
 | `noaa_spaceweather_get_solar_wind` | Real-time solar wind from the active L1 spacecraft: speed, proton density, temperature, and the critical Bz component with the window's most southward reading — explains why current geomagnetic conditions exist |
 | `noaa_spaceweather_get_solar_activity` | Solar flare picture: discrete flare events with peak class and R-scale level, GOES X-ray flux, the daily F10.7 cm radio flux, 3-day flare-class probabilities, active solar regions with per-region probabilities, and solar radiation storm level |
 | `noaa_spaceweather_get_alerts` | Active SWPC alerts, watches, and warnings — structured records with product type, severity, issue time, validity window, and full message text |
@@ -69,6 +69,8 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 
 - Without coordinates: global metadata only — grid point count, global peak probability, peak region
 - With `latitude`/`longitude` (WGS84, required together): nearest 1°-grid lookup, the centered-dipole geomagnetic latitude those coordinates convert to, the minimum Kp and G level needed at that geomagnetic latitude, and a plain-language go/no-go verdict
+- Darkness gating: the sun's elevation at the coordinates at the forecast time (`sunElevationDeg`) and the sky state it implies (`darkness`: `day`, `civil_twilight`, `nautical_twilight`, `dark`). In daylight the verdict reports aurora as not visible whatever the model probability; in twilight it adds that only bright aurora will show
+- Horizon view: the strongest reading within 1000 km poleward and ±2° longitude (`horizonMaxPercent`, `horizonMaxLatitude`, `horizonDistanceKm`). When it reaches 10% and beats the overhead reading outside daylight, the verdict adds that aurora may be visible low on the poleward horizon
 - `invalid_coordinates` error when only one of the pair is supplied
 - OVATION model updates every ~5 minutes; forecast horizon is ~30–60 minutes ahead
 
