@@ -7,10 +7,20 @@
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock the framework fetch utility so tests run without a live SWPC endpoint.
+/**
+ * The signal the pass-through `withRetry` hands its one attempt, so a test can check
+ * the request carries the attempt's signal rather than the handler's.
+ */
+const { ATTEMPT_SIGNAL } = vi.hoisted(() => ({ ATTEMPT_SIGNAL: new AbortController().signal }));
+
+// Mock the framework fetch utility so tests run without a live SWPC endpoint. The retry
+// loop itself runs for real in tests/services/feed-failure-contract.test.ts.
 vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
   fetchWithTimeout: vi.fn(),
-  withRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withRetry: vi.fn(
+    async (fn: (attempt: { remainingMs: number; signal: AbortSignal }) => Promise<unknown>) =>
+      fn({ signal: ATTEMPT_SIGNAL, remainingMs: Number.POSITIVE_INFINITY }),
+  ),
 }));
 
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
@@ -867,6 +877,150 @@ describe('SpaceWeatherService.getSolarRegions', () => {
     expect(regions[0]!.location).toBe('N17E47');
     expect(regions[0]!.cFlareProbability).toBe(25);
   });
+
+  /**
+   * A live record shape (2026-09-22), including a spotless region: SWPC nulls
+   * `area`, `spot_class`, `number_spots`, and `mag_class` together for one. The
+   * whole mapped record is pinned, not sampled.
+   */
+  it('maps every field of a spotted and a spotless region, most recent date only', async () => {
+    const raw = [
+      {
+        observed_date: '2026-09-22',
+        region: 4536,
+        latitude: 3,
+        longitude: -13,
+        location: 'N03W13',
+        area: 60,
+        spot_class: 'Dsi',
+        number_spots: 10,
+        mag_class: 'B',
+        c_xray_events: 2,
+        m_xray_events: 0,
+        x_xray_events: 0,
+        c_flare_probability: 40,
+        m_flare_probability: 5,
+        x_flare_probability: 1,
+        proton_probability: 1,
+        first_date: '2026-09-21T07:29:27',
+      },
+      {
+        observed_date: '2026-09-22',
+        region: 4532,
+        latitude: -7,
+        longitude: 82,
+        location: 'S07W82',
+        area: null,
+        spot_class: null,
+        number_spots: null,
+        mag_class: null,
+        c_xray_events: 0,
+        m_xray_events: 0,
+        x_xray_events: 0,
+        c_flare_probability: 1,
+        m_flare_probability: 1,
+        x_flare_probability: 1,
+        proton_probability: 1,
+        first_date: '2026-09-19T17:49:08',
+      },
+      {
+        // An older observation of the same region — not currently active.
+        observed_date: '2026-09-21',
+        region: 4536,
+        latitude: 3,
+        longitude: -1,
+        location: 'N03W01',
+        area: 40,
+        spot_class: 'Cso',
+        number_spots: 6,
+        mag_class: 'B',
+        c_xray_events: 1,
+        m_xray_events: 1,
+        x_xray_events: 0,
+        c_flare_probability: 30,
+        m_flare_probability: 5,
+        x_flare_probability: 1,
+        proton_probability: 1,
+        first_date: '2026-09-21T07:29:27',
+      },
+    ];
+    mockFetch.mockResolvedValue(makeResponse(raw));
+
+    const regions = await makeService().getSolarRegions(createMockContext() as never);
+
+    expect(regions).toEqual([
+      {
+        observedDate: '2026-09-22',
+        region: 4536,
+        latitude: 'N03',
+        location: 'N03W13',
+        spotClass: 'Dsi',
+        numberSpots: 10,
+        magClass: 'B',
+        // #39: same-day flare tallies, area, and first-seen time, mapped straight through.
+        areaMillionths: 60,
+        cFlareCount: 2,
+        mFlareCount: 0,
+        xFlareCount: 0,
+        firstObserved: '2026-09-21T07:29:27Z',
+        cFlareProbability: 40,
+        mFlareProbability: 5,
+        xFlareProbability: 1,
+        protonProbability: 1,
+      },
+      {
+        observedDate: '2026-09-22',
+        region: 4532,
+        latitude: 'S07',
+        location: 'S07W82',
+        spotClass: '',
+        numberSpots: 0,
+        magClass: '',
+        // A spotless region has no area — null, never a fabricated 0.
+        areaMillionths: null,
+        cFlareCount: 0,
+        mFlareCount: 0,
+        xFlareCount: 0,
+        firstObserved: '2026-09-19T17:49:08Z',
+        cFlareProbability: 1,
+        mFlareProbability: 1,
+        xFlareProbability: 1,
+        protonProbability: 1,
+      },
+    ]);
+  });
+
+  it("reads each region's counts from its own most-recent record, not an older day's (#39)", async () => {
+    const record = (observedDate: string, cEvents: number, mEvents: number) => ({
+      observed_date: observedDate,
+      region: 4536,
+      latitude: 3,
+      longitude: -13,
+      location: 'N03W13',
+      area: 60,
+      spot_class: 'Dsi',
+      number_spots: 10,
+      mag_class: 'B',
+      c_xray_events: cEvents,
+      m_xray_events: mEvents,
+      x_xray_events: 0,
+      c_flare_probability: 40,
+      m_flare_probability: 5,
+      x_flare_probability: 1,
+      proton_probability: 1,
+      first_date: '2026-09-21T07:29:27',
+    });
+    // Reverse-chrono, as the feed serves it: today's tally first, yesterday's after.
+    mockFetch.mockResolvedValue(
+      makeResponse([record('2026-09-22', 2, 0), record('2026-09-21', 5, 1)]),
+    );
+
+    const regions = await makeService().getSolarRegions(createMockContext() as never);
+
+    expect(regions).toHaveLength(1);
+    expect(regions[0]!.cFlareCount).toBe(2);
+    expect(regions[0]!.mFlareCount).toBe(0);
+  });
 });
 
 describe('SpaceWeatherService.getSolarWindMag (RTSW)', () => {
@@ -1267,6 +1421,17 @@ describe('SpaceWeatherService User-Agent (#15)', () => {
     expect(ua.startsWith('noaa-spaceweather-mcp-server/9.9.9')).toBe(true);
     expect(ua).toContain('(github.com/cyanheads/noaa-spaceweather-mcp-server)');
   });
+
+  it("threads the retry attempt's signal into the request, not the handler's (#41)", async () => {
+    mockFetch.mockResolvedValue(makeResponse([]));
+    const ctx = createMockContext();
+
+    await makeService().getKpObserved(ctx as never);
+
+    const opts = mockFetch.mock.calls[0]![3] as { signal: AbortSignal };
+    expect(opts.signal).toBe(ATTEMPT_SIGNAL);
+    expect(opts.signal).not.toBe(ctx.signal);
+  });
 });
 
 describe('SpaceWeatherService.getSolarProbabilities (#16)', () => {
@@ -1499,6 +1664,8 @@ describe('SpaceWeatherService.getNoaaScales normalization', () => {
       majorProb: null,
     });
     expect(scales.forecast).toEqual([]);
+    // The feed's key set is not guaranteed; without key "-1" there is no previous day.
+    expect(scales.yesterday).toBeNull();
   });
 
   it('reads a non-zero observed scale and its descriptor as issued', async () => {
@@ -1522,7 +1689,7 @@ describe('SpaceWeatherService.getNoaaScales normalization', () => {
     expect(today.S.scale).toBe(1);
   });
 
-  it('collects forecast periods from keys "1"–"3" in order and ignores key "-1"', async () => {
+  it('collects forecast periods from keys "1"–"3" in order and keeps key "-1" out of them', async () => {
     const forecastPeriod = (date: string, gScale: string) => ({
       DateStamp: date,
       TimeStamp: '00:00:00',
@@ -1557,6 +1724,82 @@ describe('SpaceWeatherService.getNoaaScales normalization', () => {
     // The forecast series opens on today's own calendar day — key "1" repeats key "0"'s DateStamp.
     expect(forecast.map((p) => p.date)).toEqual(['2026-09-17', '2026-09-18', '2026-09-19']);
     expect(forecast[0]!.date).toBe(today.date);
+    expect(forecast.map((p) => p.date)).not.toContain('2026-09-16');
+  });
+
+  /**
+   * Key "-1" is the previous UTC day in key "0"'s shape — levels populated, probabilities
+   * null — captured live on 2026-09-22. Its TimeStamp matches key "0"'s: it is the feed's
+   * generation clock, not an observation time for that day.
+   */
+  it('reads key "-1" into yesterday with its own date and levels (#34)', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse({
+        '-1': {
+          DateStamp: '2026-09-21',
+          TimeStamp: '22:38:00',
+          R: { Scale: '1', Text: 'minor', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '2', Text: 'moderate' },
+        },
+        '0': {
+          DateStamp: '2026-09-22',
+          TimeStamp: '22:38:00',
+          R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+      }),
+    );
+
+    const { yesterday, today } = await makeService().getNoaaScales(createMockContext() as never);
+
+    expect(yesterday?.date).toBe('2026-09-21');
+    expect(yesterday?.G).toEqual({
+      category: 'G',
+      scale: 2,
+      text: 'moderate',
+      minorProb: null,
+      majorProb: null,
+    });
+    expect(yesterday?.R).toEqual({
+      category: 'R',
+      scale: 1,
+      text: 'minor',
+      minorProb: null,
+      majorProb: null,
+    });
+    expect(yesterday?.S.scale).toBe(0);
+    // Reading the extra key leaves today exactly as it was.
+    expect(today.date).toBe('2026-09-22');
+    expect(today.G.scale).toBe(0);
+    expect(today.R.scale).toBe(0);
+  });
+
+  it('carries a null level on key "-1" through as null rather than level 0 (#34)', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse({
+        '-1': {
+          DateStamp: '2026-09-21',
+          TimeStamp: '22:38:00',
+          R: { Scale: null, Text: null, MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+        '0': {
+          DateStamp: '2026-09-22',
+          TimeStamp: '22:38:00',
+          R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+          S: { Scale: '0', Text: 'none', Prob: null },
+          G: { Scale: '0', Text: 'none' },
+        },
+      }),
+    );
+
+    const { yesterday } = await makeService().getNoaaScales(createMockContext() as never);
+
+    expect(yesterday?.R.scale).toBeNull();
+    expect(yesterday?.R.text).toBeNull();
   });
 
   /**

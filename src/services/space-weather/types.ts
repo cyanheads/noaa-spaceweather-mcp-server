@@ -68,6 +68,13 @@ export interface NoaaScalesData {
   forecast: NoaaScalesPeriod[];
   /** Today's observed/current values (key "0"). */
   today: NoaaScalesPeriod;
+  /**
+   * The R/S/G levels SWPC assessed for the previous UTC day (key "-1"), or null when the
+   * feed carries no such key. Its `date` is that day; its `time` — and so `observedAt` —
+   * is the feed's generation clock, which moves in lockstep with every other period's,
+   * and says nothing about when that day's levels were observed.
+   */
+  yesterday: NoaaScalesPeriod | null;
 }
 
 // ── Forecast Discussion types ──────────────────────────────────────────────
@@ -280,19 +287,36 @@ export interface F107Observation {
  * `:Reg_Prob: <day>` table, and the JSON feed's `observed_date` is the `:Reg_Prob:`
  * date. Read alongside `observedDate` in the same record, they otherwise look like
  * same-day figures.
+ *
+ * The three flare counts are the opposite: same-day tallies of the flares SWPC
+ * attributed to this region on `observedDate` itself, updated during the day.
+ *
+ * A spotless region (plage) arrives with `area`, `spot_class`, `number_spots`, and
+ * `mag_class` all null together: `areaMillionths` is null, and the morphology fields
+ * read `''` / 0 / `''`.
  */
 export interface SolarRegion {
+  /**
+   * Sunspot area in millionths of the solar hemisphere; null for a spotless region.
+   */
+  areaMillionths: number | null;
+  /** C-class flares SWPC attributed to this region on `observedDate`. */
+  cFlareCount: number;
   /** C-class flare probability (%), for the UTC day after `observedDate`. */
   cFlareProbability: number;
+  /** ISO 8601 UTC time SWPC first recorded this region. */
+  firstObserved: string;
   /** Heliographic latitude, e.g. "N17". */
   latitude: string;
   /** Heliographic location, e.g. "N17E47". */
   location: string;
-  /** Magnetic class. */
+  /** Magnetic class; empty for a spotless region. */
   magClass: string;
+  /** M-class flares SWPC attributed to this region on `observedDate`. */
+  mFlareCount: number;
   /** M-class flare probability (%), for the UTC day after `observedDate`. */
   mFlareProbability: number;
-  /** Number of sunspots. */
+  /** Number of sunspots; 0 for a spotless region. */
   numberSpots: number;
   /** UTC observation date; the probability fields cover the following day. */
   observedDate: string;
@@ -300,8 +324,10 @@ export interface SolarRegion {
   protonProbability: number;
   /** NOAA active region number. */
   region: number;
-  /** Spot classification. */
+  /** Spot classification; empty for a spotless region. */
   spotClass: string;
+  /** X-class flares SWPC attributed to this region on `observedDate`. */
+  xFlareCount: number;
   /** X-class flare probability (%), for the UTC day after `observedDate`. */
   xFlareProbability: number;
 }

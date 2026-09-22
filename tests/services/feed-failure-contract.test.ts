@@ -312,8 +312,9 @@ describe('feed failure classification by upstream failure class', () => {
     expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
     expect(error.data?.reason).toBe('feed_unavailable');
     expect(error.data?.path).toBe(KP_OBSERVED_PATH);
-    expect(error.data?.retryAttempts).toBe(4);
-    expect(attemptsFor(KP_OBSERVED_PATH)).toBe(4);
+    // The retry deadline cuts the third 15 s attempt short, so a fourth never starts.
+    expect(error.data?.retryAttempts).toBe(3);
+    expect(attemptsFor(KP_OBSERVED_PATH)).toBe(3);
   });
 
   it('classifies an unparseable JSON body as feed_unavailable', async () => {
@@ -480,6 +481,52 @@ describe('forecast discussion text path rides the feed-failure contract', () => 
 });
 
 /**
+ * Key "-1" read through the real service and the full tool contract: the previous UTC
+ * day survives output-schema validation and reaches both client surfaces (#34).
+ */
+describe('get_conditions yesterday through the real service (#34)', () => {
+  const PREVIOUS_DAY = {
+    DateStamp: '2026-09-16',
+    TimeStamp: '12:00:00',
+    G: { Scale: '1', Text: 'minor' },
+    R: { Scale: '0', Text: 'none', MinorProb: null, MajorProb: null },
+    S: { Scale: '0', Text: 'none', Prob: null },
+  };
+
+  it('reports the assessed previous day on structuredContent and content[]', async () => {
+    installFetch(SCALES_PATH, () =>
+      Promise.resolve(
+        Response.json({
+          '-1': PREVIOUS_DAY,
+          ...(FEED_BODIES[SCALES_PATH] as Record<string, unknown>),
+        }),
+      ),
+    );
+    const result = await runToolContract(getConditions, {});
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as { yesterday: unknown };
+    expect(structured.yesterday).toEqual({
+      date: '2026-09-16',
+      G: { scale: 1, text: 'minor', label: 'G1' },
+      R: { scale: 0, text: 'none', label: 'R0' },
+      S: { scale: 0, text: 'none', label: 'S0' },
+    });
+    expect(textOf(result)).toContain('### Yesterday (2026-09-16, assessed)');
+    expect(textOf(result)).toContain('G1 (scale 1) minor');
+  });
+
+  it('reports null on both surfaces when the feed carries no key "-1"', async () => {
+    installFetch('__none__', httpStatus(500));
+    const result = await runToolContract(getConditions, {});
+
+    expect(result.isError).toBeFalsy();
+    expect((result.structuredContent as { yesterday: unknown }).yesterday).toBeNull();
+    expect(textOf(result)).toContain('carried no assessed levels for the previous UTC day');
+  });
+});
+
+/**
  * `get_solar_activity` composes six feeds; the flare-event and F10.7 feeds are the
  * two newest. The `TOOLS` table below exercises one path per tool, so these cases
  * are the only contract coverage those two paths have — and the tool keeps
@@ -544,6 +591,141 @@ describe('the solar-activity flare and F10.7 feeds ride the feed-failure contrac
     expect(attemptsFor(FLARES_PATH)).toBe(1);
     expect(attemptsFor(F107_PATH)).toBe(1);
     expect(attemptsFor(XRAY_PATH)).toBe(1);
+  });
+});
+
+/**
+ * One wall-clock budget across the whole retry ladder (#41). Four 15 s attempts plus
+ * backoff ran ~67 s against an upstream that accepts the connection and never answers,
+ * so a client with a 60 s request timeout saw a transport timeout instead of the
+ * declared `feed_unavailable` and its recovery hint.
+ *
+ * Timing is read off the fake clock at the moment the tool call settles, so each case
+ * measures the real `withRetry` loop and the real `fetchWithTimeout` deadline.
+ */
+describe('the retry funnel answers inside one wall-clock budget (#41)', () => {
+  /** A client's request timeout — the bound the classified error has to beat. */
+  const CLIENT_TIMEOUT_MS = 60_000;
+
+  /** Run a tool against a stubbed failure and time it on the fake clock. */
+  async function timedCall(
+    definition: Parameters<typeof runToolContract>[0],
+    input: Parameters<typeof runToolContract>[1],
+    targetPath: string,
+    failure: FeedFailure,
+  ): Promise<{ elapsedMs: number; result: ToolResult }> {
+    installFetch(targetPath, failure);
+    const startedAt = Date.now();
+    let settledAt = Number.NaN;
+    const pending = runToolContract(definition, input).then((result) => {
+      settledAt = Date.now();
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(300_000);
+    const result = await pending;
+    return { elapsedMs: settledAt - startedAt, result };
+  }
+
+  /** {@link noAnswer}, recording the signal each attempt's request carried. */
+  function recordingNoAnswer(signals: AbortSignal[]): FeedFailure {
+    return (init) => {
+      if (init?.signal) signals.push(init.signal);
+      return noAnswer()(init);
+    };
+  }
+
+  it('returns feed_unavailable with its recovery hint before a 60 s client timeout on a hung feed', async () => {
+    const signals: AbortSignal[] = [];
+    const { elapsedMs, result } = await timedCall(
+      getKpIndex,
+      {},
+      KP_OBSERVED_PATH,
+      recordingNoAnswer(signals),
+    );
+    const error = errorOf(result);
+    const hint = declaredRecovery(getKpIndex, 'feed_unavailable');
+
+    expect(error.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+    expect(error.data?.reason).toBe('feed_unavailable');
+    expect(error.data?.recovery).toEqual({ hint });
+    expect(textOf(result)).toContain(`Recovery: ${hint}`);
+    expect(error.data?.path).toBe(KP_OBSERVED_PATH);
+
+    // The budget the ladder ran under rides the error, with headroom under a client timeout.
+    const deadlineMs = error.data?.deadlineMs as number;
+    expect(deadlineMs).toBeGreaterThan(0);
+    expect(deadlineMs).toBeLessThanOrEqual(CLIENT_TIMEOUT_MS - 10_000);
+    expect(elapsedMs).toBeLessThan(CLIENT_TIMEOUT_MS);
+
+    // The third attempt is cut off by the deadline itself rather than by its own 15 s
+    // timeout (~48 s): only an aborted in-flight request settles this close to it.
+    expect(elapsedMs).toBeLessThanOrEqual(deadlineMs + 50);
+    expect(error.data?.retryAttempts).toBe(3);
+    expect(attemptsFor(KP_OBSERVED_PATH)).toBe(3);
+    expect(signals).toHaveLength(3);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
+
+  it('bounds a ladder that fails fast once and then hangs, counting from the first attempt', async () => {
+    let calls = 0;
+    const { elapsedMs, result } = await timedCall(getAlerts, {}, ALERTS_PATH, (init) => {
+      calls += 1;
+      return calls === 1 ? httpStatus(503)(init) : noAnswer()(init);
+    });
+    const error = errorOf(result);
+
+    expect(error.data?.reason).toBe('feed_unavailable');
+    expect(error.data?.recovery).toEqual({ hint: declaredRecovery(getAlerts, 'feed_unavailable') });
+    const deadlineMs = error.data?.deadlineMs as number;
+    // Unbounded, the fourth attempt would run to its own timeout at ~52 s.
+    expect(elapsedMs).toBeLessThanOrEqual(deadlineMs + 50);
+    expect(elapsedMs).toBeLessThan(CLIENT_TIMEOUT_MS);
+    expect(attemptsFor(ALERTS_PATH)).toBe(4);
+    expect(error.data?.retryAttempts).toBe(4);
+  });
+
+  it('bounds the plain-text discussion path by the same budget', async () => {
+    const { elapsedMs, result } = await timedCall(
+      getConditions,
+      { include_discussion: true },
+      DISCUSSION_PATH,
+      noAnswer(),
+    );
+    const error = errorOf(result);
+
+    expect(error.data?.reason).toBe('feed_unavailable');
+    expect(error.data?.path).toBe(DISCUSSION_PATH);
+    expect(textOf(result)).toContain(
+      `Recovery: ${declaredRecovery(getConditions, 'feed_unavailable')}`,
+    );
+    expect(elapsedMs).toBeLessThanOrEqual((error.data?.deadlineMs as number) + 50);
+    // The scales feed answered once, unaffected.
+    expect(attemptsFor(SCALES_PATH)).toBe(1);
+  });
+
+  it('stops honoring a Retry-After that would outlast the budget, keeping the upstream hint', async () => {
+    const { elapsedMs, result } = await timedCall(getAlerts, {}, ALERTS_PATH, () =>
+      Promise.resolve(new Response('slow down', { status: 429, headers: { 'retry-after': '30' } })),
+    );
+    const error = errorOf(result);
+
+    expect(error.data?.reason).toBe('feed_unavailable');
+    expect(error.data?.retryAfter).toBe('30');
+    // One 30 s wait fits the budget; the second would not, so the ladder stops there.
+    expect(attemptsFor(ALERTS_PATH)).toBe(2);
+    expect(elapsedMs).toBeLessThan(CLIENT_TIMEOUT_MS);
+  });
+
+  it('keeps a fast failure at four attempts and its backoff-only timing', async () => {
+    const { elapsedMs, result } = await timedCall(getAlerts, {}, ALERTS_PATH, httpStatus(503));
+    const error = errorOf(result);
+
+    expect(error.data?.reason).toBe('feed_unavailable');
+    expect(error.data?.retryAttempts).toBe(4);
+    expect(attemptsFor(ALERTS_PATH)).toBe(4);
+    // Three backoffs of 1, 2, and 4 s, each within ±25% jitter.
+    expect(elapsedMs).toBeGreaterThanOrEqual(5_250);
+    expect(elapsedMs).toBeLessThanOrEqual(8_750);
   });
 });
 

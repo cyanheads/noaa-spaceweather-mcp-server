@@ -35,6 +35,17 @@ const BASE_URL = 'https://services.swpc.noaa.gov';
 const FETCH_TIMEOUT_MS = 15_000;
 
 /**
+ * One wall-clock budget for a feed's whole retry ladder — every attempt, backoff, and
+ * honored `Retry-After`. Four {@link FETCH_TIMEOUT_MS} attempts plus backoff run ~67 s
+ * against an upstream that accepts the connection and never answers, past a client's
+ * 60 s request timeout, so the caller saw a transport timeout instead of the classified
+ * `feed_unavailable`. 45 s leaves 15 s for the error to cross the transport, and still
+ * fits three hung attempts or the full four-attempt ladder of a fast failure (~7 s).
+ * Feeds a tool composes run their ladders in parallel, so the budget bounds the call.
+ */
+const RETRY_DEADLINE_MS = 45_000;
+
+/**
  * Build the SWPC User-Agent from the running server version so it tracks
  * package.json instead of a hardcoded release that silently drifts on each bump.
  * Product token and contact URL are fixed; only the version is dynamic.
@@ -211,7 +222,9 @@ const RETRIED_CODES: ReadonlySet<JsonRpcErrorCode> = new Set([
  * status range alone is what keeps `feed_moved` synonymous with "failed on the first
  * attempt": a 408 or 425 is a 4xx the framework classifies as `Timeout` and retries, so
  * it belongs with the transient set. Everything else — 5xx, 429, network error, client
- * deadline, unparseable or HTML body — clears on its own and stays retryable.
+ * deadline, the ladder's {@link RETRY_DEADLINE_MS} expiring (a `Timeout` carrying
+ * `retry_deadline_exceeded` and no status), unparseable or HTML body — clears on its own
+ * and stays retryable.
  */
 function feedFailureReason(error: unknown): FeedFailureReason | null {
   if (error instanceof McpError) {
@@ -237,19 +250,25 @@ const HTML_BODY_RE = /^\s*<(!DOCTYPE\s+html|html[\s>])/i;
  * the code inside the retry closure would turn a permanent 404 into four attempts and
  * seven seconds spent on a feed SWPC no longer serves. Out here the retry decision has
  * already been made from the upstream code, so attempt counts are untouched.
+ *
+ * The ladder runs under {@link RETRY_DEADLINE_MS}. `run` receives the attempt's signal —
+ * the deadline composed with `ctx.signal` — and must thread it into the request, or an
+ * expiry landing mid-attempt waits out that request's own timeout first. A caller abort
+ * still outranks the deadline and passes through unclassified.
  */
 function withFeedClassification<T>(
   path: string,
   ctx: Context,
-  run: (reqCtx: RequestContext) => Promise<T>,
+  run: (reqCtx: RequestContext, signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   // Cast ctx to RequestContext for framework utils — Context is structurally
   // compatible but lacks the index signature the type expects.
   const reqCtx = ctx as unknown as RequestContext;
-  return withRetry(() => run(reqCtx), {
+  return withRetry((attempt) => run(reqCtx, attempt.signal), {
     operation: `fetchFeed:${path}`,
     context: reqCtx,
     baseDelayMs: 1000,
+    deadlineMs: RETRY_DEADLINE_MS,
     signal: ctx.signal,
   }).catch((error: unknown) => {
     // The caller withdrew the request; nothing about the feed failed.
@@ -267,7 +286,11 @@ function withFeedClassification<T>(
   });
 }
 
-/** One request for `path`, returning the body as text. */
+/**
+ * One request for `path`, returning the body as text. `signal` is the retry attempt's —
+ * the ladder's deadline composed with the caller's abort — so either one cancels the
+ * request in flight, body read included.
+ */
 async function requestBody(
   path: string,
   reqCtx: RequestContext,
@@ -283,8 +306,8 @@ async function requestBody(
 
 /** Fetch and parse a JSON feed, through the shared retry-plus-classify funnel. */
 function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T> {
-  return withFeedClassification(path, ctx, async (reqCtx) => {
-    const text = await requestBody(path, reqCtx, ctx.signal, userAgent);
+  return withFeedClassification(path, ctx, async (reqCtx, signal) => {
+    const text = await requestBody(path, reqCtx, signal, userAgent);
     if (HTML_BODY_RE.test(text)) {
       throw serviceUnavailable(
         `SWPC feed returned HTML instead of JSON — likely rate-limited or unavailable.`,
@@ -324,8 +347,8 @@ function fetchFeed<T>(path: string, ctx: Context, userAgent: string): Promise<T>
  * retry can fix.
  */
 function fetchText(path: string, ctx: Context, userAgent: string): Promise<string> {
-  return withFeedClassification(path, ctx, async (reqCtx) => {
-    const text = await requestBody(path, reqCtx, ctx.signal, userAgent);
+  return withFeedClassification(path, ctx, async (reqCtx, signal) => {
+    const text = await requestBody(path, reqCtx, signal, userAgent);
     if (HTML_BODY_RE.test(text)) {
       throw serviceUnavailable(
         `SWPC product returned HTML instead of text — likely rate-limited or unavailable.`,
@@ -837,9 +860,18 @@ interface RawF107 {
   time_tag: string;
 }
 
+/**
+ * One record of the solar regions feed. `area`, `spot_class`, `number_spots`, and
+ * `mag_class` are null together on a spotless region; the three `*_xray_events` counts
+ * and `first_date` (T-separated, no `Z`) are populated on every record. Fields the tool
+ * does not map (`extent`, `mag_string`, `status`, the impulse and proton tallies,
+ * Carrington longitudes) are omitted from this type.
+ */
 interface RawSolarRegion {
   area: number | null;
   c_flare_probability: number | string;
+  c_xray_events: number;
+  first_date: string;
   // latitude and longitude are returned as bare integers in the live feed
   // (e.g. 17, -5), not as heliographic strings like "N17", "S05".
   // Both can be null in tombstone entries for recently-exited regions.
@@ -847,6 +879,7 @@ interface RawSolarRegion {
   location: string | null;
   longitude: number | string | null;
   m_flare_probability: number | string;
+  m_xray_events: number;
   mag_class: string | null;
   number_spots: number | null;
   observed_date: string;
@@ -854,6 +887,7 @@ interface RawSolarRegion {
   region: number;
   spot_class: string | null;
   x_flare_probability: number | string;
+  x_xray_events: number;
 }
 
 interface RawSolarProbs {
@@ -903,7 +937,7 @@ export class SpaceWeatherService {
 
   // ── NOAA Scales ────────────────────────────────────────────────────────
 
-  /** Fetch current NOAA storm scales (today + 3-day forecast). */
+  /** Fetch NOAA storm scales: yesterday's assessed levels, today, and the 3-day forecast. */
   async getNoaaScales(ctx: Context): Promise<NoaaScalesData> {
     const path = '/products/noaa-scales.json';
     const raw = await fetchFeed<Record<string, RawScalesPeriod>>(path, ctx, this.userAgent);
@@ -951,7 +985,12 @@ export class SpaceWeatherService {
         available: Object.keys(raw),
       });
 
+    // Key "-1" is optional: the feed's key set is not guaranteed, and a missing previous
+    // day takes nothing away from today or the forecast.
+    const yesterday = raw['-1'];
+
     return {
+      yesterday: yesterday ? normalizePeriod(yesterday) : null,
       today: normalizePeriod(today),
       forecast: (['1', '2', '3'] as const)
         .map((k) => raw[k])
@@ -1201,6 +1240,11 @@ export class SpaceWeatherService {
           spotClass: r.spot_class ?? '',
           numberSpots: r.number_spots ?? 0,
           magClass: r.mag_class ?? '',
+          areaMillionths: r.area,
+          cFlareCount: r.c_xray_events,
+          mFlareCount: r.m_xray_events,
+          xFlareCount: r.x_xray_events,
+          firstObserved: normalizeSwpcTime(r.first_date),
           cFlareProbability: parseNum(r.c_flare_probability) ?? 0,
           mFlareProbability: parseNum(r.m_flare_probability) ?? 0,
           xFlareProbability: parseNum(r.x_flare_probability) ?? 0,
