@@ -265,80 +265,74 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
       ),
   }),
   output: z.object({
-    observationTime: z.string().describe('Time of the OVATION model observation, ISO 8601.'),
-    forecastTime: z.string().describe('Time the aurora forecast is valid for, ISO 8601.'),
+    observationTime: z.string().describe('ISO 8601 OVATION observation time.'),
+    forecastTime: z.string().describe('ISO 8601 time the forecast is valid for.'),
     localLookup: z
       .object({
-        requestedLatitude: z
-          .number()
-          .describe('Geographic latitude supplied in the request (degrees, −90 to 90).'),
-        requestedLongitude: z
-          .number()
-          .describe('Geographic longitude supplied in the request (degrees, −180 to 180).'),
+        requestedLatitude: z.number().describe('Requested geographic latitude, in degrees.'),
+        requestedLongitude: z.number().describe('Requested geographic longitude, in degrees.'),
         geomagneticLatitude: z
           .number()
           .describe(
-            'Centered-dipole geomagnetic latitude the requested coordinates convert to (degrees, −90 to 90). Aurora bands are geomagnetic, so this — not the geographic latitude — is what minKpRequired and the verdict are derived from. It can differ from the geographic latitude by up to ±9.2° in either direction.',
+            'Geomagnetic latitude of the request, in degrees (up to ±9.2° from geographic); minKpRequired and the verdict use it.',
           ),
-        gridLatitude: z.number().describe('Nearest OVATION grid latitude.'),
-        gridLongitude: z.number().describe('Nearest OVATION grid longitude.'),
+        gridLatitude: z.number().describe('Nearest grid latitude, in degrees.'),
+        gridLongitude: z.number().describe('Nearest grid longitude, in degrees.'),
         auroraPercent: z
           .number()
           .describe('Aurora probability at the nearest grid point (0–100%).'),
         minKpRequired: z
           .number()
           .describe(
-            'Minimum Kp for aurora at this geomagnetic latitude — the floor of the band, in SWPC thirds (4.67, 5.67, 6.67, 7.67, 9.00), or 0 inside the quiet-time auroral oval above 65°. Reported as 9 where no storm level reaches, which minGScale=null distinguishes from a genuine G5 threshold. The 60° G1 band is this server’s interpolation between the oval edge and NOAA’s G2 figure; the rest are the NOAA scales page figures.',
+            'Minimum Kp for aurora here: 4.67, 5.67, 6.67, 7.67, or 9; 0 inside the quiet-time oval (above 65°). Also 9 where no storm reaches (minGScale null).',
           ),
         minGScale: z
           .number()
           .nullable()
           .describe(
-            'NOAA G level matching minKpRequired (1–5), 0 inside the quiet-time auroral oval where no storm is needed, and null below 40° geomagnetic where no storm level reaches.',
+            'G level for minKpRequired (1–5); 0 inside the quiet-time oval; null below 40° geomagnetic, where no storm reaches.',
           ),
         sunElevationDeg: z
           .number()
           .describe(
-            'Geometric solar elevation at the requested coordinates at forecastTime, in degrees (−90 to 90, rounded to 0.1°, no refraction correction). Negative when the sun is below the horizon.',
+            'Solar elevation here at forecastTime, in degrees to 0.1° (no refraction); negative below the horizon.',
           ),
         darkness: z
           .enum(DARKNESS_STATES)
           .describe(
-            'Sky darkness at the requested coordinates at forecastTime, from sunElevationDeg: day at 0° and above, civil_twilight from −6° up to 0°, nautical_twilight from −12° up to −6°, dark below −12°.',
+            'Sky state from sunElevationDeg: day ≥ 0°, civil_twilight ≥ −6°, nautical_twilight ≥ −12°, dark below.',
           ),
         horizonMaxPercent: z
           .number()
           .nullable()
           .describe(
-            'Highest aurora probability (0–100%) among grid cells poleward of gridLatitude, within ±2° longitude and 1000 km of the requested point. Null when no grid cell lies in that window, which on the full grid happens only when gridLatitude is ±90.',
+            'Highest aurora probability (0–100%) poleward of gridLatitude within ±2° longitude and 1000 km; null when no cell qualifies (gridLatitude ±90).',
           ),
         horizonMaxLatitude: z
           .number()
           .nullable()
           .describe(
-            'Grid latitude of the cell carrying horizonMaxPercent (degrees); the nearest such cell when several tie. Null when horizonMaxPercent is null.',
+            'Grid latitude of horizonMaxPercent, in degrees (nearest on a tie); null when it is null.',
           ),
         horizonDistanceKm: z
           .number()
           .nullable()
-          .describe(
-            'Great-circle distance from the requested point to the cell carrying horizonMaxPercent, in km. Null when horizonMaxPercent is null.',
-          ),
+          .describe('Distance in km to the horizonMaxPercent cell; null when it is null.'),
         verdict: z
           .string()
           .describe(
-            'Plain-language visibility verdict for the requested coordinates at forecastTime, e.g. "Good aurora chance (42%) — Kp≥6.67 (G3) needed at 51.2° geomagnetic." Opens "Not visible — daylight" when darkness is day.',
+            'Visibility verdict, e.g. "Good aurora chance (42%) — Kp≥6.67 (G3) needed at 51.2° geomagnetic."; opens "Not visible — daylight" when darkness is day.',
           ),
       })
       .nullable()
-      .describe('Local aurora lookup result. Null when no coordinates were provided.'),
-    gridPointCount: z.number().describe('Total number of grid points in the OVATION model.'),
-    topAuroraPercent: z
-      .number()
-      .describe('Highest aurora probability anywhere on the globe (0–100).'),
+      .describe('Coordinate lookup; null when no coordinates were given.'),
+    gridPointCount: z.number().describe('OVATION grid point count.'),
+    topAuroraPercent: z.number().describe('Highest aurora probability on the globe (0–100%).'),
     topAuroraRegion: z
       .string()
-      .describe('Approximate region of the highest aurora probability grid point.'),
+      .describe(
+        'Location of the highest grid point, e.g. "67°N, 20°W"; "Unknown" when every cell is 0%.',
+      ),
   }),
 
   errors: [

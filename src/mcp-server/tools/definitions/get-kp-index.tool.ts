@@ -13,38 +13,26 @@ import {
 const KpObsSchema = z
   .object({
     timeTag: z.string().describe('ISO 8601 3-hour interval time tag.'),
-    kp: z.number().describe('Kp index value 0–9.'),
-    gScale: z
-      .number()
-      .describe(
-        'NOAA G-scale equivalent (0–5). Each level starts at its "minus" third — G1 at Kp 4.67, G2 at 5.67, G3 at 6.67, G4 at 7.67 (through 8.67), G5 at 9.',
-      ),
-    gLabel: z.string().describe('NOAA G-scale label, e.g. "G0", "G3".'),
-    auroraLatitude: z
-      .string()
-      .describe('Aurora visibility guidance for this Kp level, in geomagnetic latitude.'),
+    kp: z.number().describe('Kp value (0–9).'),
+    gScale: z.number().describe('G level (0–5) for this Kp; G1 starts at 4.67, G5 at 9.'),
+    gLabel: z.string().describe('G label, e.g. "G3".'),
+    auroraLatitude: z.string().describe('Aurora guidance for this Kp, in geomagnetic latitude.'),
   })
-  .describe('One observed Kp 3-hour interval reading.');
+  .describe('One observed 3-hour Kp interval.');
 
 const KpForecastSchema = z
   .object({
-    timeTag: z.string().describe('ISO 8601 time tag for the forecast interval.'),
-    kp: z.number().describe('Forecasted Kp value.'),
-    observed: z
-      .string()
-      .describe('"estimated" for near-real-time model points, "predicted" for forecast points.'),
+    timeTag: z.string().describe('ISO 8601 forecast interval time tag.'),
+    kp: z.number().describe('Forecast Kp value (0–9).'),
+    observed: z.string().describe('"estimated" (near-real-time model) or "predicted".'),
     noaaScale: z
       .string()
       .nullable()
-      .describe('NOAA scale string, e.g. "G1", null when not available.'),
-    gScale: z
-      .number()
-      .describe(
-        'NOAA G-scale equivalent (0–5) derived from Kp, on the same minus-third band floors SWPC uses — it agrees with noaaScale when the feed states one.',
-      ),
-    gLabel: z.string().describe('NOAA G-scale label, e.g. "G0", "G3".'),
+      .describe('NOAA scale the feed states, e.g. "G1"; null when none.'),
+    gScale: z.number().describe('G level (0–5) derived from kp; matches noaaScale when stated.'),
+    gLabel: z.string().describe('G label, e.g. "G3".'),
   })
-  .describe('One forward-looking Kp forecast interval (estimated or predicted).');
+  .describe('One Kp forecast interval.');
 
 export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
   title: 'Get Kp Index',
@@ -70,20 +58,14 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
       ),
   }),
   output: z.object({
-    observed: z
-      .array(KpObsSchema)
-      .describe('Observed Kp readings within the requested window, oldest first.'),
+    observed: z.array(KpObsSchema).describe('Observed Kp in the window, oldest first.'),
     forecast: z
       .array(KpForecastSchema)
-      .describe(
-        'Forward-looking Kp forecast series (estimated and predicted entries only; observed history excluded).',
-      ),
-    currentKp: z.number().describe('Latest observed Kp value.'),
-    currentGScale: z.number().describe('NOAA G-scale for current Kp.'),
-    auroraLatitude: z.string().describe('Aurora visibility guidance for current conditions.'),
-    observedCount: z
-      .number()
-      .describe('Number of Kp observations in the observed array, matching the requested window.'),
+      .describe('Kp forecast series: estimated and predicted entries, no observed history.'),
+    currentKp: z.number().describe('Latest observed Kp; 0 when the window has none.'),
+    currentGScale: z.number().describe('G level (0–5) for currentKp.'),
+    auroraLatitude: z.string().describe('Aurora guidance for currentKp.'),
+    observedCount: z.number().describe('Entries in observed.'),
   }),
 
   errors: [

@@ -12,13 +12,11 @@ import type { NoaaScaleEntry, NoaaScalesPeriod } from '@/services/space-weather/
 
 const ScaleSummarySchema = z
   .object({
-    scale: z.number().describe('Storm scale level 0–5.'),
-    text: z
-      .string()
-      .describe('Human-readable scale descriptor, e.g. "Moderate". Empty when scale is 0.'),
-    label: z.string().describe('NOAA scale string, e.g. "G2", "R1", "S0".'),
+    scale: z.number().describe('Level 0–5.'),
+    text: z.string().describe('Descriptor, e.g. "Moderate"; "none" at level 0.'),
+    label: z.string().describe('Label, e.g. "G2".'),
   })
-  .describe('Current level and label for one NOAA storm scale category.');
+  .describe('One NOAA scale level.');
 
 /**
  * SWPC issues no R or S *level* for a future day — it issues a probability. So the
@@ -31,122 +29,78 @@ const RadioForecastSchema = z
     scale: z
       .number()
       .nullable()
-      .describe(
-        'R-scale level 0–5, or null — SWPC forecasts a radio-blackout probability for a future day rather than a level.',
-      ),
-    text: z
-      .string()
-      .nullable()
-      .describe('Human-readable R-scale descriptor, or null when no level was issued.'),
-    label: z
-      .string()
-      .nullable()
-      .describe('NOAA scale string, e.g. "R1", or null when no level was issued.'),
+      .describe('R level 0–5; null when SWPC issued a probability, not a level.'),
+    text: z.string().nullable().describe('R descriptor; null when no level was issued.'),
+    label: z.string().nullable().describe('Label, e.g. "R1"; null when no level was issued.'),
     minorProbPercent: z
       .number()
       .nullable()
-      .describe(
-        'Probability (%) of an R1–R2 minor-to-moderate radio blackout on this day, or null when SWPC issued none.',
-      ),
+      .describe('Chance (%) of an R1–R2 blackout this day; null when none issued.'),
     majorProbPercent: z
       .number()
       .nullable()
-      .describe(
-        'Probability (%) of an R3 or greater strong radio blackout on this day, or null when SWPC issued none.',
-      ),
+      .describe('Chance (%) of an R3+ blackout this day; null when none issued.'),
   })
-  .describe('Forecast radio blackout outlook for one day — a level, a probability, or neither.');
+  .describe('Radio blackout outlook for one day.');
 
 const RadiationForecastSchema = z
   .object({
     scale: z
       .number()
       .nullable()
-      .describe(
-        'S-scale level 0–5, or null — SWPC forecasts a radiation-storm probability for a future day rather than a level.',
-      ),
-    text: z
-      .string()
-      .nullable()
-      .describe('Human-readable S-scale descriptor, or null when no level was issued.'),
-    label: z
-      .string()
-      .nullable()
-      .describe('NOAA scale string, e.g. "S1", or null when no level was issued.'),
+      .describe('S level 0–5; null when SWPC issued a probability, not a level.'),
+    text: z.string().nullable().describe('S descriptor; null when no level was issued.'),
+    label: z.string().nullable().describe('Label, e.g. "S1"; null when no level was issued.'),
     probPercent: z
       .number()
       .nullable()
-      .describe(
-        'Probability (%) of an S1 or greater solar radiation storm on this day, or null when SWPC issued none.',
-      ),
+      .describe('Chance (%) of an S1+ radiation storm this day; null when none issued.'),
   })
-  .describe(
-    'Forecast solar radiation storm outlook for one day — a level, a probability, or neither.',
-  );
+  .describe('Radiation storm outlook for one day.');
 
 const ForecastPeriodSchema = z
   .object({
-    date: z.string().describe('Forecast date string, e.g. "2026-06-04".'),
-    G: ScaleSummarySchema.describe('Geomagnetic storm scale forecast for this day.'),
-    R: RadioForecastSchema.describe('Radio blackout outlook for this day.'),
-    S: RadiationForecastSchema.describe('Solar radiation storm outlook for this day.'),
+    date: z.string().describe('Forecast date, e.g. "2026-06-04".'),
+    G: ScaleSummarySchema.describe('Forecast G level.'),
+    R: RadioForecastSchema.describe('R outlook: a level, probabilities, or neither.'),
+    S: RadiationForecastSchema.describe('S outlook: a level, a probability, or neither.'),
   })
-  .describe('One day of the NOAA scale forecast series.');
+  .describe('One forecast day.');
 
 const YesterdaySchema = z
   .object({
-    date: z
-      .string()
-      .describe('The previous UTC calendar day these levels were assessed for, e.g. "2026-06-03".'),
-    G: ScaleSummarySchema.describe(
-      'Geomagnetic storm level SWPC assessed for the previous UTC day.',
-    ),
-    R: ScaleSummarySchema.describe('Radio blackout level SWPC assessed for the previous UTC day.'),
-    S: ScaleSummarySchema.describe(
-      'Solar radiation storm level SWPC assessed for the previous UTC day.',
-    ),
+    date: z.string().describe('Previous UTC day, e.g. "2026-06-03".'),
+    G: ScaleSummarySchema.describe('Assessed G level.'),
+    R: ScaleSummarySchema.describe('Assessed R level.'),
+    S: ScaleSummarySchema.describe('Assessed S level.'),
   })
-  .describe(
-    'NOAA R/S/G levels SWPC assessed for the previous UTC day. Carries a date and no time: the feed states when it was generated, not when that day was observed.',
-  );
+  .describe('Levels SWPC assessed for the previous UTC day.');
 
 const DiscussionSchema = z
   .object({
     issued: z
       .string()
       .nullable()
-      .describe(
-        'ISO 8601 UTC time the discussion was issued, from the product\'s ":Issued:" line, e.g. "2026-06-04T12:30:00Z". Null when the product carries no such line.',
-      ),
+      .describe('ISO 8601 UTC issue time from the ":Issued:" line; null when absent.'),
     sections: z
       .array(
         z
           .object({
-            topic: z
-              .string()
-              .describe(
-                'Section heading, e.g. "Solar Activity", "Energetic Particle", "Solar Wind", "Geospace".',
-              ),
+            topic: z.string().describe('Section heading, e.g. "Solar Activity".'),
             summary: z
               .string()
               .nullable()
-              .describe(
-                'Past-24 h summary text, or null when the section carries no ".24 hr Summary..." text.',
-              ),
+              .describe('Past-24 h summary text; null when the section has none.'),
             forecast: z
               .string()
               .nullable()
-              .describe(
-                'Forecast text for the next 3 days, or null when the section carries no ".Forecast..." block.',
-              ),
+              .describe('Next-3-day forecast text; null when the section has none.'),
           })
-          .describe("One topic section of the discussion — its heading and the forecaster's text."),
+          .describe('One topic section.'),
       )
-      .describe('One entry per topic section, in product order.'),
+      .describe('Topic sections, in product order.'),
   })
-  .describe(
-    "SWPC Forecast Discussion — the forecaster's narrative behind the storm scales. Null when include_discussion is false.",
-  );
+  .describe("SWPC forecaster's narrative behind the scales.");
 
 // ── Normalization helpers ───────────────────────────────────────────────────
 
@@ -277,38 +231,32 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
   output: z.object({
     observedAt: z
       .string()
-      .describe(
-        'ISO 8601 UTC date and time of the NOAA scales data period this snapshot reflects, e.g. "2026-06-04T15:00:00Z".',
-      ),
+      .describe('ISO 8601 UTC time of the scales data period, e.g. "2026-06-04T15:00:00Z".'),
     currentKp: z.number().describe('Latest observed planetary K-index (0–9).'),
-    currentGScale: z.number().describe('NOAA G-scale equivalent for current Kp (0–5).'),
+    currentGScale: z.number().describe('G level (0–5) for currentKp.'),
     auroraLatitude: z
       .string()
       .describe(
-        'Aurora visibility guidance for current conditions, e.g. "Aurora possible to ~55° geomagnetic latitude".',
+        'Aurora guidance for currentKp, e.g. "Aurora possible to ~55° geomagnetic latitude".',
       ),
     yesterday: YesterdaySchema.nullable().describe(
-      'NOAA R/S/G levels SWPC assessed for the previous UTC day — answers what happened yesterday without a history call. Null when the scales feed carries no previous-day period, or carries one missing a level; null never means level 0.',
+      'R/S/G levels assessed for the previous UTC day (a date, no time). Null when the feed lacks that period or a level; null never means level 0.',
     ),
     today: z
       .object({
-        G: ScaleSummarySchema.describe("Today's geomagnetic storm scale."),
-        R: ScaleSummarySchema.describe("Today's radio blackout scale."),
-        S: ScaleSummarySchema.describe("Today's solar radiation storm scale."),
+        G: ScaleSummarySchema.describe("Today's G level."),
+        R: ScaleSummarySchema.describe("Today's R level."),
+        S: ScaleSummarySchema.describe("Today's S level."),
       })
-      .describe('Current observed NOAA storm scales for today.'),
+      .describe('Observed R/S/G levels for today.'),
     forecast: z
       .array(ForecastPeriodSchema)
-      .describe(
-        "SWPC's 3-day NOAA scale forecast, oldest first. The series starts with today — the same calendar day as observedAt — and covers the next two days.",
-      ),
+      .describe('3-day scale forecast, oldest first; starts with today (the date of observedAt).'),
     summary: z
       .string()
-      .describe(
-        'Plain-language status summary suitable for display, e.g. "Quiet conditions" or "G2 moderate geomagnetic storm in progress."',
-      ),
+      .describe('Plain-language status, e.g. "G2 moderate geomagnetic storm in progress."'),
     discussion: DiscussionSchema.nullable().describe(
-      'SWPC Forecast Discussion when include_discussion is true, otherwise null.',
+      'SWPC Forecast Discussion; null unless include_discussion is true.',
     ),
   }),
 

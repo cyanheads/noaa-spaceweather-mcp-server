@@ -116,77 +116,47 @@ function classifySScale(fluxPfu: number): number {
 
 const XraySchema = z
   .object({
-    timeTag: z.string().describe('ISO 8601 measurement time tag.'),
+    timeTag: z.string().describe('ISO 8601 measurement time.'),
     fluxWm2: z
       .string()
-      .describe(
-        'X-ray flux in W/m² (0.1-0.8nm long channel from GOES), formatted as scientific notation with 2 significant digits, e.g. "1.4e-6 W/m²".',
-      ),
-    fluxWm2Value: z
-      .number()
-      .describe(
-        'Same quantity as fluxWm2, unformatted, so it can be compared without parsing the display string.',
-      ),
-    flareClass: z.string().describe('Flare classification letter: A, B, C, M, or X.'),
+      .describe('Long-channel (0.1–0.8 nm) X-ray flux for display, e.g. "1.4e-6 W/m²".'),
+    fluxWm2Value: z.number().describe('fluxWm2 as an unformatted number, in W/m².'),
+    flareClass: z.string().describe('Flare class letter: A, B, C, M, or X.'),
     flareClassFull: z
       .string()
       .nullable()
       .describe(
-        'Flare class with magnitude, e.g. "B2.5" — null below the A1 floor of 1e-8 W/m² (zero and negative readings included), where SWPC\'s class scheme defines none.',
+        'Class with magnitude, e.g. "B2.5"; null below A1 (1e-8 W/m²), zero and negative readings included.',
       ),
     satellite: z.number().describe('GOES satellite number.'),
   })
-  .describe('One GOES X-ray flux reading with flare class.');
+  .describe('One GOES X-ray reading.');
 
 const FlareSchema = z
   .object({
-    beginTime: z.string().describe('ISO 8601 UTC onset time (SWPC begin_time).'),
-    maxTime: z.string().describe('ISO 8601 UTC time of peak flux (SWPC max_time).'),
-    endTime: z
-      .string()
-      .nullable()
-      .describe('ISO 8601 UTC decay time; null while the flare is still in progress.'),
-    beginClass: z.string().describe('GOES class with magnitude at onset, e.g. "B4.2".'),
-    maxClass: z
-      .string()
-      .describe('Peak GOES class with magnitude, e.g. "M5.2" — SWPC max_class, read as published.'),
-    endClass: z
-      .string()
-      .nullable()
-      .describe('GOES class with magnitude at decay; null while the flare is still in progress.'),
-    peakFluxWm2: z
-      .number()
-      .describe('Peak long-channel (0.1–0.8 nm) flux in W/m² — SWPC max_xrlong.'),
-    rScale: z
-      .number()
-      .describe(
-        'NOAA R-scale level implied by the peak flux (0–5); 0 means below the R1 threshold.',
-      ),
-    satellite: z.number().describe('GOES satellite number the record came from.'),
+    beginTime: z.string().describe('ISO 8601 UTC onset time.'),
+    maxTime: z.string().describe('ISO 8601 UTC peak time.'),
+    endTime: z.string().nullable().describe('ISO 8601 UTC decay time; null while in progress.'),
+    beginClass: z.string().describe('Class at onset, e.g. "B4.2".'),
+    maxClass: z.string().describe('Peak class as SWPC publishes it, e.g. "M5.2".'),
+    endClass: z.string().nullable().describe('Class at decay; null while in progress.'),
+    peakFluxWm2: z.number().describe('Peak long-channel (0.1–0.8 nm) flux, in W/m².'),
+    rScale: z.number().describe('R level (0–5) the peak flux implies; 0 is below R1.'),
+    satellite: z.number().describe('GOES satellite number.'),
   })
-  .describe('One discrete GOES X-ray flare event.');
+  .describe('One GOES X-ray flare event.');
 
 const F107Schema = z
   .object({
-    observedTime: z
-      .string()
-      .describe(
-        "ISO 8601 UTC time of the observation (normalized from the feed's Z-less tag). Up to ~24 h old — read it rather than treating the value as now.",
-      ),
-    fluxSfu: z
-      .number()
-      .describe('10.7 cm solar radio flux in solar flux units (sfu), measured at 2800 MHz.'),
+    observedTime: z.string().describe('ISO 8601 UTC observation time; can be ~24 h old.'),
+    fluxSfu: z.number().describe('10.7 cm (2800 MHz) solar radio flux, in sfu.'),
     ninetyDayMeanSfu: z
       .number()
       .nullable()
-      .describe('90-day mean flux in sfu; null when the selected record does not carry one.'),
-    reportingSchedule: z
-      .string()
-      .describe(
-        'Which of the three daily Penticton reports this is: "Morning", "Noon", or "Afternoon".',
-      ),
+      .describe('90-day mean flux in sfu; null when the record carries none.'),
+    reportingSchedule: z.string().describe('Penticton report: "Morning", "Noon", or "Afternoon".'),
   })
-  .describe('Latest daily F10.7 index.');
+  .describe('Daily F10.7 reading.');
 
 const SolarRegionSchema = z
   .object({
@@ -195,107 +165,63 @@ const SolarRegionSchema = z
     latitude: z.string().describe('Heliographic latitude, e.g. "N17".'),
     spotClass: z
       .string()
-      .describe(
-        'Sunspot morphology class, e.g. "Dsi". Empty for a spotless region (plage), where magClass is empty and numberSpots is 0 too.',
-      ),
-    numberSpots: z.number().describe('Number of sunspots in this region; 0 for a spotless region.'),
-    magClass: z.string().describe('Magnetic field class, e.g. "B"; empty for a spotless region.'),
+      .describe('Sunspot class, e.g. "Dsi"; empty for a spotless region (plage).'),
+    numberSpots: z.number().describe('Sunspot count; 0 for a spotless region.'),
+    magClass: z.string().describe('Magnetic class, e.g. "B"; empty for a spotless region.'),
     areaMillionths: z
       .number()
       .nullable()
-      .describe(
-        'Sunspot area in millionths of the solar hemisphere. Null for a spotless region (plage).',
-      ),
-    firstObserved: z
-      .string()
-      .describe('ISO 8601 UTC time SWPC first recorded this region, e.g. "2026-09-21T07:29:27Z".'),
+      .describe('Sunspot area in millionths of the hemisphere; null for a spotless region.'),
+    firstObserved: z.string().describe('ISO 8601 UTC time SWPC first recorded this region.'),
     cFlareCount: z
       .number()
-      .describe(
-        'C-class flares SWPC attributed to this region on observedDate itself — a same-day tally updated during that day, unlike the probability fields, which cover the following day.',
-      ),
+      .describe('C-class flares SWPC credited to this region on observedDate.'),
     mFlareCount: z
       .number()
-      .describe(
-        'M-class flares SWPC attributed to this region on observedDate itself — a same-day tally updated during that day, unlike the probability fields, which cover the following day.',
-      ),
+      .describe('M-class flares SWPC credited to this region on observedDate.'),
     xFlareCount: z
       .number()
-      .describe(
-        'X-class flares SWPC attributed to this region on observedDate itself — a same-day tally updated during that day, unlike the probability fields, which cover the following day.',
-      ),
+      .describe('X-class flares SWPC credited to this region on observedDate.'),
     cFlareProbability: z
       .number()
-      .describe(
-        'Probability of a C-class flare from this region (%), for the UTC day AFTER observedDate — SWPC issues each day’s region probabilities against the previous day’s observation.',
-      ),
+      .describe('C-class flare chance (%) for the UTC day after observedDate.'),
     mFlareProbability: z
       .number()
-      .describe(
-        'Probability of an M-class flare from this region (%), for the UTC day AFTER observedDate — SWPC issues each day’s region probabilities against the previous day’s observation.',
-      ),
+      .describe('M-class flare chance (%) for the UTC day after observedDate.'),
     xFlareProbability: z
       .number()
-      .describe(
-        'Probability of an X-class flare from this region (%), for the UTC day AFTER observedDate — SWPC issues each day’s region probabilities against the previous day’s observation.',
-      ),
+      .describe('X-class flare chance (%) for the UTC day after observedDate.'),
     protonProbability: z
       .number()
-      .describe(
-        'Probability of a proton event from this region (%), for the UTC day AFTER observedDate — SWPC issues each day’s region probabilities against the previous day’s observation.',
-      ),
+      .describe('Proton event chance (%) for the UTC day after observedDate.'),
     observedDate: z
       .string()
-      .describe(
-        'UTC date this region was observed. The three flare counts cover this day; the four probability fields cover the following day, not this one.',
-      ),
+      .describe('UTC observation date: the flare counts cover it, the probabilities the next day.'),
   })
-  .describe(
-    "One active solar region: morphology, the flares SWPC attributed to it that day, and the next day's flare probabilities.",
-  );
+  .describe('One active solar region.');
 
 const ProbsSchema = z
   .object({
     date: z.string().describe('Forecast date.'),
-    cClass1Day: z.number().describe('Total probability of a C-class flare for this date (%).'),
-    cClassProbability: z
-      .number()
-      .describe(
-        'Total probability of a C-class flare for this date (%). Date-neutral alias of cClass1Day.',
-      ),
-    mClass1Day: z.number().describe('Total probability of an M-class flare for this date (%).'),
-    mClassProbability: z
-      .number()
-      .describe(
-        'Total probability of an M-class flare for this date (%). Date-neutral alias of mClass1Day.',
-      ),
-    xClass1Day: z.number().describe('Total probability of an X-class flare for this date (%).'),
-    xClassProbability: z
-      .number()
-      .describe(
-        'Total probability of an X-class flare for this date (%). Date-neutral alias of xClass1Day.',
-      ),
-    protons1Day: z.number().describe('Probability of a ≥10 MeV proton event for this date (%).'),
-    protonEventProbability: z
-      .number()
-      .describe(
-        'Probability of a ≥10 MeV proton event for this date (%). Date-neutral alias of protons1Day.',
-      ),
+    cClass1Day: z.number().describe('Deprecated: use cClassProbability (same value).'),
+    cClassProbability: z.number().describe('C-class flare chance (%) for this date.'),
+    mClass1Day: z.number().describe('Deprecated: use mClassProbability (same value).'),
+    mClassProbability: z.number().describe('M-class flare chance (%) for this date.'),
+    xClass1Day: z.number().describe('Deprecated: use xClassProbability (same value).'),
+    xClassProbability: z.number().describe('X-class flare chance (%) for this date.'),
+    protons1Day: z.number().describe('Deprecated: use protonEventProbability (same value).'),
+    protonEventProbability: z.number().describe('≥10 MeV proton event chance (%) for this date.'),
   })
-  .describe('Solar flare probability forecast for one day.');
+  .describe('Flare probabilities for one day.');
 
 const ProtonSchema = z
   .object({
-    timeTag: z.string().describe('ISO 8601 measurement time tag.'),
-    fluxPfu: z
-      .number()
-      .describe(
-        'Integral proton flux in particle flux units (pfu) at ≥10 MeV, rounded to 3 significant figures.',
-      ),
-    sScale: z.number().describe('NOAA S-scale level (0–5) for this flux reading.'),
+    timeTag: z.string().describe('ISO 8601 measurement time.'),
+    fluxPfu: z.number().describe('≥10 MeV integral proton flux in pfu, to 3 significant figures.'),
+    sScale: z.number().describe('S level (0–5) for this flux.'),
     energy: z.string().describe('Energy channel, e.g. ">=10 MeV".'),
   })
-  .describe('One GOES integral proton flux reading with S-scale.');
+  .describe('One GOES proton flux reading.');
 
 export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
   title: 'Get Solar Activity',
@@ -331,37 +257,25 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
   }),
   output: z.object({
     latestXray: XraySchema.nullable().describe(
-      'Most recent GOES X-ray flux reading, null if unavailable.',
+      'Newest X-ray reading; null when the feed is empty.',
     ),
-    recentXray: z
-      .array(XraySchema)
-      .describe('GOES X-ray flux readings from the past hour, oldest first.'),
+    recentXray: z.array(XraySchema).describe('X-ray readings from the past hour, oldest first.'),
     recentFlares: z
       .array(FlareSchema)
-      .describe(
-        'Discrete flare events whose onset falls within the flare_hours window, oldest first. Empty when no flare began in the window.',
-      ),
+      .describe('Flares with onset inside flare_hours, oldest first; empty when none began.'),
     f107: F107Schema.nullable().describe(
-      'Latest daily F10.7 solar radio flux — the Noon Penticton report, which is the value SWPC reports for the day. Null when the feed carries no such record.',
+      "Latest Noon report, SWPC's daily F10.7 value; null when the feed has none.",
     ),
-    probabilities: z.array(ProbsSchema).describe('3-day flare probability forecasts.'),
+    probabilities: z.array(ProbsSchema).describe('3-day flare probability forecast.'),
     latestProton: ProtonSchema.nullable().describe(
-      'Most recent ≥10 MeV proton flux reading, null if unavailable.',
+      'Newest ≥10 MeV proton reading; null when the feed is empty.',
     ),
-    sScale: z
-      .number()
-      .describe(
-        'Current NOAA S-scale for solar radiation storms (0–5), derived from latest proton flux.',
-      ),
-    sScaleText: z
-      .string()
-      .describe('Plain-language S-scale description, e.g. "S2 moderate radiation storm".'),
+    sScale: z.number().describe('Current S level (0–5) from latestProton; 0 without a reading.'),
+    sScaleText: z.string().describe('S level descriptor, e.g. "S2 moderate radiation storm".'),
     activeRegions: z
       .array(SolarRegionSchema)
-      .describe(
-        'Currently active solar regions with same-day flare counts and next-day flare probabilities. Empty when include_regions=false or no regions are active.',
-      ),
-    fetchedAt: z.string().describe('ISO 8601 timestamp of when this data was fetched.'),
+      .describe('Active regions; empty when include_regions=false or none are active.'),
+    fetchedAt: z.string().describe('ISO 8601 fetch time.'),
   }),
 
   enrichment: {
@@ -369,7 +283,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       .string()
       .optional()
       .describe(
-        'Guidance when the requested flare_hours window returned no flare events — names the newest flare the feed carries, or reports that the feed itself returned none.',
+        'Set when no flare began in the flare_hours window: names the newest flare in the feed, or says the feed has none.',
       ),
   },
 
@@ -593,11 +507,20 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
         lines.push(
           `**${p.date}:** C=${p.cClassProbability}% | M=${p.mClassProbability}% | X=${p.xClassProbability}% | Proton=${p.protonEventProbability}%`,
         );
-        // The legacy *1Day fields carry the same values; rendered so content[]
-        // stays in parity with structuredContent across both field namings (#16).
-        lines.push(
-          `  (legacy: cClass1Day=${p.cClass1Day}% mClass1Day=${p.mClass1Day}% xClass1Day=${p.xClass1Day}% protons1Day=${p.protons1Day}%)`,
-        );
+        // The deprecated *1Day fields repeat their date-neutral aliases, so the line
+        // above already renders their values. One is rendered on its own only if it
+        // ever disagrees with its alias, keeping every distinct value in content[].
+        const divergent = (
+          [
+            ['cClass1Day', p.cClass1Day, p.cClassProbability],
+            ['mClass1Day', p.mClass1Day, p.mClassProbability],
+            ['xClass1Day', p.xClass1Day, p.xClassProbability],
+            ['protons1Day', p.protons1Day, p.protonEventProbability],
+          ] as const
+        )
+          .filter(([, deprecated, alias]) => deprecated !== alias)
+          .map(([name, deprecated]) => `${name}=${deprecated}%`);
+        if (divergent.length > 0) lines.push(`  (deprecated, differs: ${divergent.join(' ')})`);
       }
     }
     if (result.activeRegions.length > 0) {

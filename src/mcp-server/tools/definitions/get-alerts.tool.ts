@@ -170,62 +170,46 @@ function exclusionReason(
 
 const AlertSchema = z
   .object({
-    productId: z
-      .string()
-      .describe(
-        'Short SWPC feed product ID, e.g. "K04W", "EF3A". See messageCode for the full code.',
-      ),
-    messageCode: z
-      .string()
-      .describe(
-        'Full SWPC "Space Weather Message Code" parsed from the message body, e.g. "WARK04", "ALTEF3" — the code that drives product type, phenomenon, and level.',
-      ),
+    productId: z.string().describe('Short SWPC product ID, e.g. "K04W".'),
+    messageCode: z.string().describe('Full message code from the body, e.g. "WARK04".'),
     productType: z
       .enum(['Warning', 'Watch', 'Alert', 'Summary', 'Other'])
-      .describe('Product classification derived from the code prefix.'),
+      .describe('Product type, from the code prefix.'),
     level: z
       .number()
       .describe(
-        'NOAA scale level 0–5, read from the scale stated in the message body. 0 means the product states no NOAA scale (e.g. a K4 warning, below the G-scale; or a radio-burst alert, outside the scales) — not a severity of zero. See noaaScale for the scale letter.',
+        'NOAA scale level 0–5 stated in the body; 0 means no scale is stated, not zero severity.',
       ),
     noaaScale: z
       .string()
       .nullable()
-      .describe(
-        'NOAA scale stated in the message body, e.g. "G1", "R2", "S1"; null when the product states none.',
-      ),
+      .describe('NOAA scale stated in the body, e.g. "G1"; null when none.'),
     cancelled: z
       .boolean()
       .describe(
-        'True when this record cancels a previously issued product ("CANCEL WARNING:"/"CANCEL WATCH:"/"CANCEL ALERT:" headline) rather than being in force. Always false when active_only=true, which excludes both the cancellation record and the product it names — a cancelled product carries cancelled: false itself, so this flag does not identify one. Set active_only=false to see cancellations and what they cancelled.',
+        'True when this record cancels an earlier product; the cancelled product itself stays false. Always false under active_only=true, which drops both.',
       ),
     serialNumber: z
       .string()
       .nullable()
       .describe(
-        'The record\'s SWPC "Serial Number:" value, e.g. "1125"; null when the body carries no such line. A per-message-code counter, not a globally unique ID — it repeats across codes and within one code on a corrected reissue, so quote it together with messageCode. It is the key the "Cancel Serial Number:", "Extension to Serial Number:", and "Continuation of Serial Number:" lines in message point at, which is what makes those chains navigable.',
+        'SWPC serial number, e.g. "1125"; null when absent. Unique only within messageCode; the Cancel, Extension to, and Continuation of Serial Number lines in message point at it.',
       ),
-    phenomenon: z
-      .string()
-      .describe(
-        'Short phenomenon name derived from the body\'s NOAA scale letter, e.g. "Geomagnetic", "Radio Blackout", "Solar Radiation".',
-      ),
-    issueDatetime: z.string().describe('ISO 8601 issue datetime.'),
+    phenomenon: z.string().describe('Phenomenon from the scale letter, e.g. "Geomagnetic".'),
+    issueDatetime: z.string().describe('ISO 8601 issue time.'),
     validFrom: z
       .string()
       .nullable()
-      .describe(
-        'Validity-window start as ISO 8601 UTC, parsed from the message body ("Valid From" or "Begin Time"); null when the product carries no start line.',
-      ),
+      .describe('ISO 8601 UTC validity start stated in the body; null when none.'),
     validTo: z
       .string()
       .nullable()
       .describe(
-        'Validity-window end as ISO 8601 UTC. Read from the message body\'s "Valid To", "Now Valid Until", or "End Time" label when the product states one. A Watch states none, so its end is derived from the "Highest Storm Level Predicted by Day:" list instead: the instant the last listed UTC day forecasting a storm ends (a trailing "None" day is a forecast of quiet, not coverage), so a Watch listing Sep 17 as its last storm day ends at 2026-09-18T00:00:00Z. Null when nothing in the body states or implies an end — a point-in-time Alert, or a Watch forecasting no storm on any listed day.',
+        'ISO 8601 UTC validity end; for a Watch, the end of its last listed storm day. Null when nothing states or implies an end.',
       ),
-    message: z.string().describe('Full plain-text message body.'),
+    message: z.string().describe('Full plain-text message.'),
   })
-  .describe('One SWPC alert, watch, warning, or summary.');
+  .describe('One SWPC product.');
 
 export const getAlerts = tool('noaa_spaceweather_get_alerts', {
   title: 'Get Space Weather Alerts',
@@ -255,14 +239,14 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
       ),
   }),
   output: z.object({
-    alerts: z.array(AlertSchema).describe('Matching SWPC alert/watch/warning records.'),
-    totalCount: z.number().describe('Count of records in the alerts array.'),
+    alerts: z.array(AlertSchema).describe('Matching SWPC products.'),
+    totalCount: z.number().describe('Records in alerts.'),
     activeOnly: z
       .boolean()
       .describe(
-        'Echo of the active_only input: true when the records are the in-force set, false when they are every product in the window. Distinguishes an empty in-force result from an empty feed window.',
+        'Echo of active_only: true for the in-force set, false for every product in the window.',
       ),
-    fetchedAt: z.string().describe('ISO 8601 timestamp of when this data was fetched.'),
+    fetchedAt: z.string().describe('ISO 8601 fetch time.'),
   }),
 
   errors: [
@@ -373,45 +357,27 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
   },
 
   enrichment: {
-    notice: z.string().optional().describe('Status notice when no products were returned.'),
+    notice: z.string().optional().describe('Set when no products were returned.'),
     appliedWindowHours: z
       .number()
       .optional()
-      .describe(
-        'The max_age_hours window as applied, echoed so a caller can see what bounded the candidate set. Present only under active_only=true, where a future validity end can keep an older product in scope.',
-      ),
+      .describe('max_age_hours as applied. Present only under active_only=true.'),
     appliedCutoff: z
       .string()
       .optional()
-      .describe(
-        'ISO 8601 UTC instant the applied window starts at: a product issued before this is outside it. Present only under active_only=true.',
-      ),
+      .describe('ISO 8601 UTC start of the applied window. Present only under active_only=true.'),
     exclusions: z
       .object({
-        agedOut: z
-          .number()
-          .describe('Issued outside the applied window with no validity end still ahead.'),
-        productType: z
-          .number()
-          .describe('Summaries and unrecognized products, which are never in force.'),
-        cancellationRecord: z.number().describe('Cancellation notices themselves.'),
-        cancelledBySerial: z
-          .number()
-          .describe(
-            'Named by a later cancellation\'s "Cancel Serial Number:" under the same code.',
-          ),
-        superseded: z
-          .number()
-          .describe('Carries the supersede line but is not the newest record that does.'),
-        validityElapsed: z
-          .number()
-          .describe(
-            'Validity end already passed, with nothing newer cancelling or superseding it.',
-          ),
+        agedOut: z.number().describe('Issued before the window, no validity end ahead.'),
+        productType: z.number().describe('Summaries and unrecognized products.'),
+        cancellationRecord: z.number().describe('Cancellation notices.'),
+        cancelledBySerial: z.number().describe('Named by a later cancellation.'),
+        superseded: z.number().describe('Replaced by a newer superseding Watch.'),
+        validityElapsed: z.number().describe('Validity end already passed.'),
       })
       .optional()
       .describe(
-        'How many products active_only=true left out, by reason. Reasons overlap, so each excluded record is counted under the first that applies, in this field order — these counts plus totalCount equal the number of records the feed carried. Emitted only when something was excluded, and never under active_only=false. Use it to tell "space weather is quiet" from "everything was filtered" without a second active_only=false call.',
+        'Records active_only=true left out, each counted under its first reason in field order; with totalCount they sum to the feed total. Present only under active_only=true, when something was excluded.',
       ),
   },
 

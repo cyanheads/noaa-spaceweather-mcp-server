@@ -20,7 +20,9 @@ const REDUCED_SERIES_MAX = 200;
  * Bound a series to {@link REDUCED_SERIES_MAX} records by bucketing it by record
  * count and emitting the one record `pick` selects from each bucket — a real
  * upstream measurement, never a synthesized average, so an excursion shorter than
- * a bucket survives instead of being stepped over by a stride.
+ * a bucket survives instead of being stepped over by a stride. The bucket size is
+ * reported in records, not minutes: the feed skips minutes, so one bucket spans a
+ * variable stretch of wall-clock time.
  *
  * The newest record rides the tail unbucketed: `series.at(-1)` is what the
  * matching `latest*` field reports, and a caller reading the tail for "current"
@@ -63,51 +65,30 @@ const fastestSpeed = (bucket: readonly SolarWindPlasma[]): SolarWindPlasma =>
 
 const PlasmaSchema = z
   .object({
-    timeTag: z.string().describe('ISO 8601 measurement time tag.'),
-    source: z
-      .string()
-      .describe('Spacecraft that reported this measurement, as named by the feed, e.g. "SOLAR1".'),
+    timeTag: z.string().describe('ISO 8601 measurement time.'),
+    source: z.string().describe('Reporting spacecraft, e.g. "SOLAR1".'),
     densityPerCm3: z
       .number()
       .nullable()
-      .describe('Proton density in particles/cm³. Null when the feed omits the value.'),
-    speedKmS: z
-      .number()
-      .nullable()
-      .describe('Solar wind speed in km/s. Null when the feed omits the value.'),
-    temperatureK: z
-      .number()
-      .nullable()
-      .describe('Proton temperature in Kelvin. Null when the feed omits the value.'),
+      .describe('Proton density in particles/cm³; null when missing.'),
+    speedKmS: z.number().nullable().describe('Solar wind speed in km/s; null when missing.'),
+    temperatureK: z.number().nullable().describe('Proton temperature in K; null when missing.'),
   })
-  .describe('One plasma measurement from the active L1 spacecraft.');
+  .describe('One L1 plasma record.');
 
 const MagSchema = z
   .object({
-    timeTag: z.string().describe('ISO 8601 measurement time tag.'),
-    source: z
-      .string()
-      .describe('Spacecraft that reported this measurement, as named by the feed, e.g. "SOLAR1".'),
-    bxGsm: z
-      .number()
-      .nullable()
-      .describe('Bx component in GSM coordinates (nT). Null when the feed omits the value.'),
-    byGsm: z
-      .number()
-      .nullable()
-      .describe('By component in GSM coordinates (nT). Null when the feed omits the value.'),
+    timeTag: z.string().describe('ISO 8601 measurement time.'),
+    source: z.string().describe('Reporting spacecraft, e.g. "SOLAR1".'),
+    bxGsm: z.number().nullable().describe('Bx, GSM, in nT; null when missing.'),
+    byGsm: z.number().nullable().describe('By, GSM, in nT; null when missing.'),
     bzGsm: z
       .number()
       .nullable()
-      .describe(
-        'Bz component in GSM coordinates (nT). Southward (negative) drives geomagnetic storms. Null when the feed omits the value.',
-      ),
-    bt: z
-      .number()
-      .nullable()
-      .describe('Total field magnitude Bt (nT). Null when the feed omits the value.'),
+      .describe('Bz, GSM, in nT; negative (southward) drives storms; null when missing.'),
+    bt: z.number().nullable().describe('Total field Bt in nT; null when missing.'),
   })
-  .describe('One magnetic field measurement from the active L1 spacecraft.');
+  .describe('One L1 magnetic field record.');
 
 export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
   title: 'Get Solar Wind',
@@ -158,93 +139,79 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     plasma: z
       .array(PlasmaSchema)
       .describe(
-        'Plasma measurements (speed, density, temperature) within the window, oldest first. Under resolution="reduced" this is at most 200 real records — one per equal-size bucket of the window, each the bucket\'s fastest speed — with the newest windowed record last. Empty under resolution="summary".',
+        'Plasma records in the window, oldest first. "reduced": at most 200, each its bucket\'s fastest speed, newest last. Empty under "summary".',
       ),
     mag: z
       .array(MagSchema)
       .describe(
-        'Magnetic field measurements (Bx, By, Bz, Bt) within the window, oldest first. Under resolution="reduced" this is at most 200 real records — one per equal-size bucket of the window, each the bucket\'s most southward Bz — with the newest windowed record last, so the final element always equals latestMag. Empty under resolution="summary".',
+        'Mag records in the window, oldest first. "reduced": at most 200, each its bucket\'s most southward Bz; the last equals latestMag. Empty under "summary".',
       ),
     latestPlasma: PlasmaSchema.nullable().describe(
-      'Most recent plasma reading, null if no data in window.',
+      'Newest plasma record in the window; null when the window has none.',
     ),
     latestMag: MagSchema.nullable().describe(
-      'Most recent magnetic field reading, null if no data in window.',
+      'Newest mag record in the window; null when the window has none.',
     ),
     bzStatus: z
       .string()
       .describe(
-        'Plain-language Bz status, e.g. "Southward Bz −14 nT — storm-driving conditions" or "Northward Bz +5 nT — quiescent".',
+        'Bz status from latestMag, e.g. "Southward Bz -14 nT — storm-driving conditions."; "Bz data unavailable." without a reading.',
       ),
     plasmaCount: z
       .number()
       .describe(
-        'Number of plasma records in the plasma array. Equal to the records in the window at full resolution; under a reduction it is the emitted count, and plasmaWindowRecords carries the pre-reduction total. Under resolution="summary" the array is empty and this is the records the window held.',
+        'Records in plasma (plasmaWindowRecords has the pre-reduction total); under "summary", the records the window held.',
       ),
     magCount: z
       .number()
       .describe(
-        'Number of magnetic field records in the mag array. Equal to the records in the window at full resolution; under a reduction it is the emitted count, and magWindowRecords carries the pre-reduction total. Under resolution="summary" the array is empty and this is the records the window held.',
+        'Records in mag (magWindowRecords has the pre-reduction total); under "summary", the records the window held.',
       ),
     bzMinInWindow: z
       .number()
       .nullable()
-      .describe(
-        'Lowest (most southward) Bz reading in nT across the whole window, computed before any reduction — the number storm work reads next to the latest value. Null when the window is empty or every bzGsm in it is null.',
-      ),
+      .describe('Most southward Bz in nT across the whole window; null when it has no Bz.'),
     bzMinTimeTag: z
       .string()
       .nullable()
-      .describe(
-        'ISO 8601 time tag of the record that carried bzMinInWindow. Null whenever bzMinInWindow is null.',
-      ),
+      .describe('ISO 8601 time of bzMinInWindow; null when it is null.'),
     bzSouthMinutesInWindow: z
       .number()
       .describe(
-        'Minutes of southward Bz in the window: the count of 1-minute mag records with bzGsm below 0, across the whole window before any reduction. Gaps in the feed are not counted, so it can fall short of the wall-clock time Bz spent southward. 0 on an empty window, an all-null window, or one with no southward Bz.',
+        'Minutes of Bz < 0: 1-minute mag records across the whole window. Feed gaps are not counted. 0 when none.',
       ),
     speedMaxInWindow: z
       .number()
       .nullable()
-      .describe(
-        'Highest solar wind speed in km/s across the whole window, computed before any reduction. Null when the window is empty or every speedKmS in it is null.',
-      ),
+      .describe('Peak speed in km/s across the whole window; null when it has no speed.'),
     speedMaxTimeTag: z
       .string()
       .nullable()
-      .describe(
-        'ISO 8601 time tag of the record that carried speedMaxInWindow. Null whenever speedMaxInWindow is null.',
-      ),
+      .describe('ISO 8601 time of speedMaxInWindow; null when it is null.'),
     densityMaxInWindow: z
       .number()
       .nullable()
-      .describe(
-        'Highest proton density in particles/cm³ across the whole window, computed before any reduction. Null when the window is empty or every densityPerCm3 in it is null.',
-      ),
+      .describe('Peak proton density in particles/cm³ across the whole window; null when none.'),
     btMaxInWindow: z
       .number()
       .nullable()
-      .describe(
-        'Highest total field magnitude Bt in nT across the whole window, computed before any reduction. Null when the window is empty or every bt in it is null.',
-      ),
+      .describe('Peak Bt in nT across the whole window; null when it has no Bt.'),
     latestFeedPlasmaTime: z
       .string()
       .nullable()
       .describe(
-        'ISO 8601 time of the newest plasma record the feed carries, ignoring the window. Null when the feed returned no active-spacecraft plasma records. Compare against the window to tell a quiet feed from a stale one.',
+        'ISO 8601 time of the newest plasma record in the feed, window aside; null when none.',
       ),
     latestFeedMagTime: z
       .string()
       .nullable()
       .describe(
-        'ISO 8601 time of the newest magnetic field record the feed carries, ignoring the window. Null when the feed returned no active-spacecraft mag records.',
+        'ISO 8601 time of the newest mag record in the feed, window aside; null when none.',
       ),
     feedStalenessHours: z
       .number()
       .nullable()
-      .describe(
-        'Hours between now and the newest record across both feeds — how far behind real time the upstream data is. Null when both feeds returned no active-spacecraft records.',
-      ),
+      .describe('Hours from the newest record in either feed to now; null when both are empty.'),
   }),
 
   enrichment: {
@@ -252,31 +219,29 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       .string()
       .optional()
       .describe(
-        'Guidance on what shaped this response: that the requested window returned no plasma or magnetic field records — naming the newest record the feed carries, or reporting that the feed itself returned nothing from an active spacecraft — that a series was bounded to 200 records, with the per-series factors, or that resolution="summary" omitted both series.',
+        'What shaped the response: an empty window (with the newest feed record), series bounded to 200 records, or series omitted under "summary".',
       ),
     plasmaBucketRecords: z
       .number()
       .optional()
       .describe(
-        'Plasma records per emitted record — the bucket size the window was reduced by, or 1 when this series was returned untouched. Records rather than a minute cadence: the feed skips minutes, so a bucket spans a variable stretch of wall-clock time. Present only when a reduction was applied to either series.',
+        'Plasma records per emitted record, 1 if untouched. Present only after a reduction.',
       ),
     plasmaWindowRecords: z
       .number()
       .optional()
       .describe(
-        'Plasma records the window held before reduction. Present only when a reduction was applied to either series, or under resolution="summary".',
+        'Plasma records in the window before reduction. Present after a reduction or under "summary".',
       ),
     magBucketRecords: z
       .number()
       .optional()
-      .describe(
-        'Magnetic field records per emitted record — the bucket size the window was reduced by, or 1 when this series was returned untouched. The two series differ in length, so each carries its own factor. Present only when a reduction was applied to either series.',
-      ),
+      .describe('Mag records per emitted record, 1 if untouched. Present only after a reduction.'),
     magWindowRecords: z
       .number()
       .optional()
       .describe(
-        'Magnetic field records the window held before reduction. Present only when a reduction was applied to either series, or under resolution="summary".',
+        'Mag records in the window before reduction. Present after a reduction or under "summary".',
       ),
   },
 
