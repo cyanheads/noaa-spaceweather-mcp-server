@@ -365,9 +365,7 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
     // A local lookup needs the pair; one coordinate alone has nothing to look up.
     const { latitude: lat, longitude: lon } = input;
     if ((lat == null) !== (lon == null)) {
-      throw ctx.fail('invalid_coordinates', 'Provide both latitude and longitude, or neither.', {
-        ...ctx.recoveryFor('invalid_coordinates'),
-      });
+      throw ctx.fail('invalid_coordinates', 'Provide both latitude and longitude, or neither.');
     }
 
     ctx.log.info('Fetching aurora forecast', { latitude: lat, longitude: lon });
@@ -399,7 +397,7 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
         throw ctx.fail(
           'feed_moved',
           'OVATION feed carried no parseable Forecast Time; the daylight check at the requested coordinates needs it.',
-          { forecastTime: aurora.meta.forecastTime, ...ctx.recoveryFor('feed_moved') },
+          { forecastTime: aurora.meta.forecastTime },
         );
       }
 

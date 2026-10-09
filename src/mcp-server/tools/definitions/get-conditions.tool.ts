@@ -331,8 +331,7 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
     }
 
     /** A missing level is a feed shape break — see {@link observedScale}. */
-    const failOnMissingLevel = (message: string) =>
-      ctx.fail('feed_moved', message, ctx.recoveryFor('feed_moved'));
+    const failOnMissingLevel = (message: string) => ctx.fail('feed_moved', message);
 
     return {
       observedAt: today.observedAt,
