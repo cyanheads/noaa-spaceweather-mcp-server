@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/noaa-spaceweather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/noaa-spaceweather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/noaa-spaceweather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/noaa-spaceweather-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/noaa-spaceweather-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/noaa-spaceweather-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -46,70 +46,47 @@ Space weather from NOAA's Space Weather Prediction Center (SWPC) — geomagnetic
 
 ### `noaa_spaceweather_get_conditions` <sub>tool</sub>
 
-- `include_discussion` (bool, default false) is the only input — otherwise a single call composing storm scales and current Kp into one snapshot
-- Returns today's observed R/S/G storm levels plus SWPC's 3-day forecast series, which starts with today
-- `yesterday` carries the R/S/G levels SWPC assessed for the previous UTC day, with its date and no time — the feed states only when it was generated. Null when the feed carries no previous-day period
-- Forecast days carry what SWPC issues: a G level, and for R and S a probability — R1–R2, R3 or greater, S1 or greater — with no level. A null level means SWPC forecasts none for that day, which is not the same as level 0
-- Current Kp with G-scale equivalent and aurora-visibility latitude guidance
+- `include_discussion` (bool, default false) is the only input; one call composes the `noaa-scales.json` and `noaa-planetary-k-index.json` feeds, plus the `discussion.txt` product when the discussion is requested
+- Returns current Kp with its G-scale equivalent and aurora-latitude guidance, today's observed R/S/G levels, `yesterday` (the previous UTC day's assessed levels, null when the feed carries none), and SWPC's 3-day forecast starting today — forecast R and S carry probabilities rather than levels, and a null level means none was forecast, not level 0
 - With `include_discussion`, the forecaster-written Forecast Discussion split into its topic sections (Solar Activity, Energetic Particle, Solar Wind, Geospace), each with its 24-hour summary and 3-day forecast text
-- Data sourced from the `noaa-scales.json` + `noaa-planetary-k-index.json` feeds, plus the `discussion.txt` product when the discussion is requested
 
 ---
 
 ### `noaa_spaceweather_get_kp_index` <sub>tool</sub>
 
-- `window_days` (1–7, default 1) bounds the observed series; the forecast series is always SWPC's full 3-day forecast
-- Each observed/forecast record carries Kp, G-scale equivalent, G-scale label, and aurora-latitude guidance
-- G levels follow SWPC's minus-third band floors — G1 starts at Kp 4.67 (5−), G4 runs through 8.67 (9−), and only Kp 9 is G5
-- Forecast excludes the feed's embedded historical "observed" entries — only forward-looking `estimated`/`predicted` rows
-- `observedCount` reports how many observed readings matched the window
+- `window_days` (1–7, default 1) bounds the observed series, and `observedCount` reports how many readings matched; the forecast is always SWPC's full 3-day series of forward-looking `estimated`/`predicted` rows
+- Each record carries Kp, its G level and label, and aurora-latitude guidance. G levels follow SWPC's minus-third band floors — G1 starts at Kp 4.67 (5−), and only Kp 9 is G5
 
 ---
 
 ### `noaa_spaceweather_get_aurora_forecast` <sub>tool</sub>
 
-- Without coordinates: global metadata only — grid point count, global peak probability, peak region
-- With `latitude`/`longitude` (WGS84, required together): nearest 1°-grid lookup, the centered-dipole geomagnetic latitude those coordinates convert to, the minimum Kp and G level needed at that geomagnetic latitude, and a plain-language go/no-go verdict
-- Darkness gating: the sun's elevation at the coordinates at the forecast time (`sunElevationDeg`) and the sky state it implies (`darkness`: `day`, `civil_twilight`, `nautical_twilight`, `dark`). In daylight the verdict reports aurora as not visible whatever the model probability; in twilight it adds that only bright aurora will show
-- Horizon view: the strongest reading within 1000 km poleward and ±2° longitude (`horizonMaxPercent`, `horizonMaxLatitude`, `horizonDistanceKm`). When it reaches 10% and beats the overhead reading outside daylight, the verdict adds that aurora may be visible low on the poleward horizon
-- `invalid_coordinates` error when only one of the pair is supplied
-- OVATION model updates every ~5 minutes; forecast horizon is ~30–60 minutes ahead
+- `latitude`/`longitude` (WGS84) are optional but required together — one alone fails `invalid_coordinates`. Without them the call returns global metadata only: grid point count, global peak probability, and peak region
+- With coordinates, `localLookup` carries the nearest 1°-grid probability, the geomagnetic latitude, the minimum Kp and G level needed there, the sun's elevation and `darkness` state (`day`, `civil_twilight`, `nautical_twilight`, `dark`) at the forecast time, the strongest reading within 1000 km poleward (`horizonMaxPercent`, `horizonMaxLatitude`, `horizonDistanceKm`), and a go/no-go `verdict` — not visible in daylight, whatever the model probability
+- The OVATION model updates every ~5 minutes and forecasts ~30–60 minutes ahead
 
 ---
 
 ### `noaa_spaceweather_get_solar_wind` <sub>tool</sub>
 
-- `window_hours` (1–168, default 3) slices client-side from a feed that carries roughly the last 24 hours at ~1-minute cadence
-- `resolution` (`summary`, `reduced` default, or `full`) sets the series detail. `reduced` bounds each returned series to 200 records: the window is bucketed by record count and one real measurement is emitted per bucket — the bucket's fastest speed for plasma, its most southward Bz for mag — with the newest record in the window always last. A series already inside the bound comes back untouched, so a default 3-hour call is unaffected; `full` returns every record (~1,400 per series over 24 hours); `summary` returns both series empty and keeps every headline field, about 2 KB whatever the window
-- Plasma (speed, density, temperature) and magnetic field (Bx/By/Bz/Bt GSM) returned as separate oldest-first series
-- `bzStatus` surfaces southward Bz (the storm driver) as a plain-language field, and `bzMinInWindow` with its time tag reports the window's most southward reading
-- Window statistics: `speedMaxInWindow` with its time tag, `densityMaxInWindow`, `btMaxInWindow`, and `bzSouthMinutesInWindow` — the count of 1-minute records with Bz below 0, so a gap in the feed adds nothing. Every headline field is computed from the full window, before any reduction, at every resolution
+- `window_hours` (1–168, default 3) slices a feed that carries roughly the last 24 hours at ~1-minute cadence. `resolution` sets series detail: `reduced` (default) caps each series at 200 records, keeping each bucket's fastest speed and most southward Bz; `full` returns every record (~1,400 per series over 24 hours); `summary` returns empty series and every headline field, about 2 KB
+- Returns oldest-first plasma (speed, density, temperature) and magnetic-field (Bx/By/Bz/Bt GSM) series, each record naming its spacecraft, plus headline fields computed over the full window at every resolution: `bzStatus`, `bzMinInWindow`, `speedMaxInWindow`, `densityMaxInWindow`, `btMaxInWindow`, and `bzSouthMinutesInWindow`
 - `latestFeedPlasmaTime`/`latestFeedMagTime`/`feedStalenessHours` distinguish an empty window from a stale feed
-- Every record names its reporting spacecraft — no satellite is assumed as "the" active one
 
 ---
 
 ### `noaa_spaceweather_get_solar_activity` <sub>tool</sub>
 
-- `include_regions` (default true) toggles per-region active-solar-region detail to control response size
-- `flare_hours` (1–168, default 24) bounds the discrete flare events returned, filtered on each flare's onset; the feed keeps a rolling 7 days, so 168 returns everything it carries
-- Flare events come with the classes SWPC publishes — onset, peak, and decay, each with magnitude — the peak flux, and the NOAA R-scale level (0–5) that flux implies. Decay time and class are null while a flare is still in progress, and an empty window names the newest flare the feed holds
-- GOES X-ray flux (0.1–0.8 nm) with flare-class letter (A/B/C/M/X), the class with magnitude (`flareClassFull`, derived by SWPC's truncation rule so it agrees with the published flare classes), and the unformatted flux alongside the display string; recent readings cover the past hour
-- Daily F10.7 cm solar radio flux in sfu with its 90-day mean, from the Noon Penticton report — the value SWPC reports for the day. It can be up to ~24 h old, so its observation time rides with it
-- 3-day C/M/X flare-class and proton-event probabilities under date-neutral names (`cClassProbability`, `mClassProbability`, `xClassProbability`, `protonEventProbability`); the deprecated `*1Day` names still carry the same values in `structuredContent`
-- Each active region carries the C/M/X flare counts SWPC attributed to it on its observation day — the flare events carry no region, so these name the region driving current activity — its sunspot area in millionths of the hemisphere, and when SWPC first recorded it. Its flare probabilities cover the following day. A spotless region (plage) reads as such, with a null area
-- Integral proton flux (≥10 MeV) drives the reported NOAA S-scale (0–5)
-- Data sourced from the `goes/primary/xrays-6-hour.json`, `goes/primary/xray-flares-7-day.json`, `f107_cm_flux.json`, `solar_probabilities.json`, `goes/primary/integral-protons-plot-3-day.json`, and `solar_regions.json` feeds
+- `flare_hours` (1–168, default 24) bounds the flare events returned by onset over the feed's rolling 7 days; `include_regions` (default true) toggles per-region detail to control response size
+- Returns discrete flare events with onset, peak, and decay classes, peak flux, and the NOAA R level (0–5) it implies (decay is null while a flare is in progress; peak fields are null when SWPC recorded no peak); GOES X-ray flux with its flare class (`flareClassFull`); the daily F10.7 cm radio flux with its observation time; 3-day C/M/X flare and proton-event probabilities (`cClassProbability`, `mClassProbability`, `xClassProbability`, `protonEventProbability` — the deprecated `*1Day` names still carry them in `structuredContent`); and the S level from ≥10 MeV proton flux
+- With `include_regions`, each active region's sunspot area, the C/M/X flare counts SWPC attributed to it on its observation day, and its next-day flare probabilities
 
 ---
 
 ### `noaa_spaceweather_get_alerts` <sub>tool</sub>
 
-- `active_only` (default true) — in-force Warnings/Watches/Alerts only. A product stays in force until the feed says otherwise, so this also drops any product a later cancellation names by serial, and all but the newest Watch carrying `THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT` — alongside cancellations, Summaries, and products whose validity end has passed
-- `max_age_hours` (1–720, default 48) bounds how far back to look for candidates; the SWPC feed itself has no expiry. Under `active_only=true` it does not cut off a product whose validity end is still ahead, so a multi-day Watch survives until the last day it forecasts a storm for ends; under `active_only=false` it is a literal age cutoff
-- Each record carries product type, NOAA scale + level (0 means "no scale stated," not zero severity), serial number, parsed validity window, and full message text
-- `cancelled` flags a record that cancels a prior product rather than being active; the product it cancels is a separate record, excluded by the serial link rather than by this flag
-- Under `active_only=true` the response echoes the applied window and counts what it excluded, by reason — so an empty result reads as "quiet" or "everything was filtered" without a second call
+- `active_only` (default true) keeps in-force Warnings/Watches/Alerts, dropping cancelled and superseded products, Summaries, and products whose validity has ended. `max_age_hours` (1–720, default 48) bounds how far back candidates reach — under `active_only` a product whose validity end is still ahead survives it; otherwise it is a literal age cutoff
+- Each record carries product type, NOAA scale and level (0 means "no scale stated," not zero severity), serial number, parsed validity window, `cancelled`, and full message text. Under `active_only` the response also counts what it excluded, by reason, so an empty result reads as "quiet" or "everything was filtered"
 
 ---
 
@@ -216,7 +193,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.3.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
 - No API keys required — all SWPC feeds are public.
 
 ### Installation
@@ -260,6 +237,7 @@ cp .env.example .env
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424). | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
+| `LOG_TOOL_FAILURE_PAYLOADS` | Log each failed tool call's arguments and result, redacted by key name and capped at `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` (default `16384`). A secret inside a free-form value is not redacted. | `false` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend. | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 

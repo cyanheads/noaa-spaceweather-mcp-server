@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-10-08
+
+Solar-activity calls no longer fail when SWPC publishes a flare with no recorded peak; on mcp-ts-core 0.13.14, numeric and boolean strings sent for number and boolean arguments are repaired, and tool errors end with a request ID.
+
 ## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-09-22
 
 Trims output-schema descriptions across all six tools; tools/list drops from 59,209 B to 47,806 B (stdio, 6 tools).
