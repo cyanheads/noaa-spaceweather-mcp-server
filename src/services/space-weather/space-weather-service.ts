@@ -163,17 +163,18 @@ function tryParseJson<T>(text: string): { value: T } | null {
 
 /**
  * The declared failure reasons every tool's `errors[]` exposes for an upstream feed
- * failure. They split on whether retrying can ever help, because the recovery hint
- * `ctx.recoveryFor` resolves is one-per-reason and the two hints point in opposite
- * directions.
+ * failure. They split on whether retrying can ever help, because the recovery hint the
+ * framework fills from a tool's contract is one-per-reason and the two hints point in
+ * opposite directions.
  */
 type FeedFailureReason = 'feed_unavailable' | 'feed_moved';
 
 /**
- * Wire-shaped feed failure: the caller's tool contract supplies the recovery hint,
- * `path` names the feed on every class (an HTTP-origin error carries a status but no
- * path of its own), and `data` from the underlying rejection is preserved so `status`,
- * `statusText`, `retryAfter`, `retryAttempts`, and `available` survive.
+ * Wire-shaped feed failure: `reason` lets the framework fill the recovery hint from the
+ * calling tool's contract, `path` names the feed on every class (an HTTP-origin error
+ * carries a status but no path of its own), and `data` from the underlying rejection is
+ * preserved so `status`, `statusText`, `retryAfter`, `retryAttempts`, and `available`
+ * survive.
  *
  * Both reasons map to `ServiceUnavailable`: the failure is upstream, and no 4xx from
  * these keyless feeds can be caused by caller input. `feed_moved` also carries
@@ -184,7 +185,6 @@ function feedFailure(
   reason: FeedFailureReason,
   message: string,
   path: string,
-  ctx: Context,
   data?: Record<string, unknown>,
   cause?: unknown,
 ): McpError {
@@ -196,7 +196,6 @@ function feedFailure(
       ...(reason === 'feed_moved' ? { retryable: false } : {}),
       path,
       reason,
-      ...ctx.recoveryFor(reason),
     },
     cause !== undefined ? { cause } : undefined,
   );
@@ -279,7 +278,6 @@ function withFeedClassification<T>(
       reason,
       error instanceof Error ? error.message : `SWPC feed request failed for ${path}.`,
       path,
-      ctx,
       error instanceof McpError ? error.data : undefined,
       error,
     );
@@ -833,17 +831,19 @@ interface RawXrayFlux {
 /**
  * One record of the GOES X-ray flare feed — one discrete flare event, published at
  * onset. All twelve keys are present on every record, so sparsity arrives as `null`
- * rather than an absent key. `max_ratio`, `max_ratio_time`, and `current_int_xrlong`
- * are carried by the feed but deliberately unmapped (see {@link XrayFlare}).
+ * rather than an absent key — the decay pair while a flare is in progress, and the peak
+ * triple on a completed flare SWPC recorded no peak for. `max_ratio`, `max_ratio_time`,
+ * and `current_int_xrlong` are carried by the feed but deliberately unmapped (see
+ * {@link XrayFlare}).
  */
 interface RawXrayFlare {
   begin_class: string;
   begin_time: string;
   end_class: string | null;
   end_time: string | null;
-  max_class: string;
-  max_time: string;
-  max_xrlong: number;
+  max_class: string | null;
+  max_time: string | null;
+  max_xrlong: number | null;
   satellite: number;
   time_tag: string;
 }
@@ -981,7 +981,7 @@ export class SpaceWeatherService {
     // The feed answered, but not with the shape it is documented to have — the same
     // class of break as a path that no longer resolves, and equally unfixable by a retry.
     if (!today)
-      throw feedFailure('feed_moved', 'SWPC scales feed missing key "0" (today).', path, ctx, {
+      throw feedFailure('feed_moved', 'SWPC scales feed missing key "0" (today).', path, {
         available: Object.keys(raw),
       });
 
@@ -1014,13 +1014,9 @@ export class SpaceWeatherService {
     // class of break as the scales feed losing its "0" key, and equally unfixable by a
     // retry. Raised out here rather than inside fetchText so it costs one attempt.
     if (!discussion)
-      throw feedFailure(
-        'feed_moved',
-        'SWPC forecast discussion carried no topic section.',
-        path,
-        ctx,
-        { bytes: text.length },
-      );
+      throw feedFailure('feed_moved', 'SWPC forecast discussion carried no topic section.', path, {
+        bytes: text.length,
+      });
 
     return discussion;
   }
@@ -1175,12 +1171,12 @@ export class SpaceWeatherService {
     return raw
       .map((r) => ({
         beginTime: normalizeSwpcTime(r.begin_time),
-        maxTime: normalizeSwpcTime(r.max_time),
+        maxTime: r.max_time == null ? null : normalizeSwpcTime(r.max_time),
         endTime: r.end_time == null ? null : normalizeSwpcTime(r.end_time),
         beginClass: r.begin_class,
-        maxClass: r.max_class,
+        maxClass: r.max_class ?? null,
         endClass: r.end_class ?? null,
-        peakFluxWm2: r.max_xrlong,
+        peakFluxWm2: r.max_xrlong ?? null,
         satellite: r.satellite,
       }))
       .sort(byIsoAscending('beginTime'));

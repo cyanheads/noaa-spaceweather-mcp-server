@@ -26,7 +26,11 @@ vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
 import { kpToGScale, SpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
 import { SWPC_DISCUSSION } from '../fixtures/swpc-discussion.js';
-import { SWPC_F107_FEED, SWPC_XRAY_FLARE_FEED } from '../fixtures/swpc-xray-flares.js';
+import {
+  SWPC_F107_FEED,
+  SWPC_PEAKLESS_FLARE,
+  SWPC_XRAY_FLARE_FEED,
+} from '../fixtures/swpc-xray-flares.js';
 
 const mockFetch = vi.mocked(fetchWithTimeout);
 
@@ -1246,6 +1250,47 @@ describe('SpaceWeatherService.getXrayFlares (#31)', () => {
     expect(flares[0]!.endTime).toBeNull();
     expect(flares[0]!.endClass).toBeNull();
     expect(flares[0]!.maxTime).toBe('2026-09-17T12:16:00Z');
+  });
+
+  it('maps a flare with no recorded peak to null peak fields (#45)', async () => {
+    mockFetch.mockResolvedValue(makeResponse([SWPC_PEAKLESS_FLARE]));
+
+    const flares = await makeService().getXrayFlares(createMockContext() as never);
+
+    // Null, never "null", "nullZ", or NaN — and no throw from the time normalization.
+    expect(flares).toEqual([
+      {
+        beginTime: '2026-09-29T07:57:00Z',
+        maxTime: null,
+        endTime: '2026-09-29T12:57:00Z',
+        beginClass: 'B3.0',
+        maxClass: null,
+        endClass: 'B3.7',
+        peakFluxWm2: null,
+        satellite: 18,
+      },
+    ]);
+  });
+
+  it('reads a bare NaN peak flux as a null peak, not NaN (#45)', async () => {
+    const body = JSON.stringify([{ ...SWPC_PEAKLESS_FLARE, max_xrlong: 0 }]);
+    mockFetch.mockResolvedValue(
+      makeRawResponse(body.replace('"max_xrlong":0', '"max_xrlong":NaN')),
+    );
+
+    const flares = await makeService().getXrayFlares(createMockContext() as never);
+
+    expect(flares[0]!.peakFluxWm2).toBeNull();
+  });
+
+  it('orders a peakless flare among peaked ones by onset (#45)', async () => {
+    mockFetch.mockResolvedValue(
+      makeResponse([SWPC_PEAKLESS_FLARE, SWPC_XRAY_FLARE_FEED[3], SWPC_XRAY_FLARE_FEED[0]]),
+    );
+
+    const flares = await makeService().getXrayFlares(createMockContext() as never);
+
+    expect(flares.map((f) => f.maxClass)).toEqual(['B8.1', 'B3.2', null]);
   });
 
   it('orders events oldest-first even when upstream serves them newest-first', async () => {

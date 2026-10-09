@@ -112,6 +112,28 @@ export const SWPC_XRAY_FLARE_FEED = [
 ];
 
 /**
+ * A completed flare SWPC published with no recorded peak — `max_time`, `max_class`,
+ * and `max_xrlong` all null — as the feed served it on 2026-09-29 (#45). Keys follow
+ * the live feed's set and order. The captured record carried only the mapped keys, so
+ * `time_tag` takes `begin_time` (equal on every record) and the three unmapped keys
+ * (`max_ratio`, `max_ratio_time`, `current_int_xrlong`) are filled null.
+ */
+export const SWPC_PEAKLESS_FLARE = {
+  time_tag: '2026-09-29T07:57:00Z',
+  begin_time: '2026-09-29T07:57:00Z',
+  begin_class: 'B3.0',
+  max_time: null,
+  max_class: null,
+  max_xrlong: null,
+  max_ratio: null,
+  max_ratio_time: null,
+  current_int_xrlong: null,
+  end_time: '2026-09-29T12:57:00Z',
+  end_class: 'B3.7',
+  satellite: 18,
+};
+
+/**
  * Records from `/json/f107_cm_flux.json` as served on 2026-09-17, newest-first.
  * Three reports per UTC day, and `avg_begin_date` / `ninety_day_mean` /
  * `rec_count` populated only on the Noon record — the one SWPC's own

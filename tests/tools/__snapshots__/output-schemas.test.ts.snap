@@ -989,16 +989,28 @@ exports[`tool output schemas > noaa_spaceweather_get_solar_activity keeps its ad
             ],
           },
           "maxClass": {
-            "type": "string",
+            "type": [
+              "string",
+              "null",
+            ],
           },
           "maxTime": {
-            "type": "string",
+            "type": [
+              "string",
+              "null",
+            ],
           },
           "peakFluxWm2": {
-            "type": "number",
+            "type": [
+              "number",
+              "null",
+            ],
           },
           "rScale": {
-            "type": "number",
+            "type": [
+              "number",
+              "null",
+            ],
           },
           "satellite": {
             "type": "number",

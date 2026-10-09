@@ -85,6 +85,24 @@ function fluxToRScale(fluxWm2: number): number {
 }
 
 /**
+ * The peak segment of a flare event's rendered line. SWPC nulls the peak fields
+ * together on a completed flare it recorded no peak for; each is still read on its own
+ * so a partial record never renders a literal "null" or an "R" with no level.
+ */
+function describePeak(f: {
+  maxClass: string | null;
+  maxTime: string | null;
+  peakFluxWm2: number | null;
+  rScale: number | null;
+}): string {
+  if (f.maxClass === null && f.maxTime === null && f.peakFluxWm2 === null) {
+    return '**No recorded peak**';
+  }
+  const flux = f.peakFluxWm2 === null ? '' : ` at ${f.peakFluxWm2} W/m² — **R${f.rScale}**`;
+  return `**${f.maxClass ?? 'Unrecorded class'}** peaked ${f.maxTime ?? 'at an unrecorded time'}${flux}`;
+}
+
+/**
  * Format X-ray flux for display: 2 significant digits in scientific notation, e.g.
  * "1.4e-6 W/m²". Raw GOES values carry ~16 digits of IEEE-754 noise, which is what
  * `fluxWm2Value` is for — a caller comparing numbers reads that field rather than
@@ -135,13 +153,25 @@ const XraySchema = z
 const FlareSchema = z
   .object({
     beginTime: z.string().describe('ISO 8601 UTC onset time.'),
-    maxTime: z.string().describe('ISO 8601 UTC peak time.'),
+    maxTime: z
+      .string()
+      .nullable()
+      .describe('ISO 8601 UTC peak time; null when SWPC recorded no peak.'),
     endTime: z.string().nullable().describe('ISO 8601 UTC decay time; null while in progress.'),
     beginClass: z.string().describe('Class at onset, e.g. "B4.2".'),
-    maxClass: z.string().describe('Peak class as SWPC publishes it, e.g. "M5.2".'),
+    maxClass: z
+      .string()
+      .nullable()
+      .describe('Peak class as SWPC publishes it, e.g. "M5.2"; null when SWPC recorded no peak.'),
     endClass: z.string().nullable().describe('Class at decay; null while in progress.'),
-    peakFluxWm2: z.number().describe('Peak long-channel (0.1–0.8 nm) flux, in W/m².'),
-    rScale: z.number().describe('R level (0–5) the peak flux implies; 0 is below R1.'),
+    peakFluxWm2: z
+      .number()
+      .nullable()
+      .describe('Peak long-channel (0.1–0.8 nm) flux, in W/m²; null when SWPC recorded no peak.'),
+    rScale: z
+      .number()
+      .nullable()
+      .describe('R level (0–5) the peak flux implies; 0 is below R1, null with no recorded peak.'),
     satellite: z.number().describe('GOES satellite number.'),
   })
   .describe('One GOES X-ray flare event.');
@@ -366,7 +396,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
         maxClass: f.maxClass,
         endClass: f.endClass,
         peakFluxWm2: f.peakFluxWm2,
-        rScale: fluxToRScale(f.peakFluxWm2),
+        rScale: f.peakFluxWm2 === null ? null : fluxToRScale(f.peakFluxWm2),
         satellite: f.satellite,
       }));
 
@@ -374,9 +404,14 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
     if (recentFlares.length === 0) {
       // The service orders the series oldest-first, so the last element is the newest.
       const newest = flares.at(-1);
+      const newestText = !newest
+        ? null
+        : newest.maxClass === null
+          ? `began at ${newest.beginTime} as ${newest.beginClass}, with no recorded peak`
+          : `is ${newest.maxClass}, which began at ${newest.beginTime}`;
       ctx.enrich.notice(
-        newest
-          ? `No flare events began in the requested ${input.flare_hours}-hour window; the newest flare the feed carries is ${newest.maxClass}, which began at ${newest.beginTime}.`
+        newestText
+          ? `No flare events began in the requested ${input.flare_hours}-hour window; the newest flare the feed carries ${newestText}.`
           : 'The feed returned no flare events.',
       );
     }
@@ -479,7 +514,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('### Flare Events');
       for (const f of result.recentFlares) {
         lines.push(
-          `- **${f.maxClass}** peaked ${f.maxTime} at ${f.peakFluxWm2} W/m² — **R${f.rScale}** | began ${f.beginTime} as ${f.beginClass} | decayed ${f.endTime ?? 'in progress'} to ${f.endClass ?? 'in progress'} | GOES-${f.satellite}`,
+          `- ${describePeak(f)} | began ${f.beginTime} as ${f.beginClass} | decayed ${f.endTime ?? 'in progress'} to ${f.endClass ?? 'in progress'} | GOES-${f.satellite}`,
         );
       }
     }

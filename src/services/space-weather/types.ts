@@ -233,7 +233,9 @@ export interface XrayFlux {
  * Every class is read from the feed, never derived: SWPC publishes `begin_class`,
  * `max_class`, and `end_class` with their magnitudes already stated. The record is
  * published at onset — `time_tag` equals `begin_time` on every record — so a flare
- * still in progress has no decay time or class yet and both read null.
+ * still in progress has no decay time or class yet and both read null. SWPC also
+ * publishes some completed flares with `max_time`, `max_class`, and `max_xrlong` all
+ * null; the peak fields carry those nulls rather than an invented peak.
  *
  * The feed's `max_ratio` / `max_ratio_time` are not mapped, and neither is
  * `current_int_xrlong`: it is an *integrated* flux running about four decades above
@@ -249,12 +251,18 @@ export interface XrayFlare {
   endClass: string | null;
   /** ISO 8601 UTC decay time; null while the flare is still in progress. */
   endTime: string | null;
-  /** Peak GOES class with magnitude, e.g. "M5.2" — SWPC's `max_class`, as published. */
-  maxClass: string;
-  /** ISO 8601 UTC time of peak flux. */
-  maxTime: string;
-  /** Peak long-channel (0.1–0.8 nm) flux in W/m² — SWPC's `max_xrlong`. */
-  peakFluxWm2: number;
+  /**
+   * Peak GOES class with magnitude, e.g. "M5.2" — SWPC's `max_class`, as published;
+   * null when SWPC recorded no peak.
+   */
+  maxClass: string | null;
+  /** ISO 8601 UTC time of peak flux; null when SWPC recorded no peak. */
+  maxTime: string | null;
+  /**
+   * Peak long-channel (0.1–0.8 nm) flux in W/m² — SWPC's `max_xrlong`; null when SWPC
+   * recorded no peak.
+   */
+  peakFluxWm2: number | null;
   /** GOES satellite number the record came from. */
   satellite: number;
 }

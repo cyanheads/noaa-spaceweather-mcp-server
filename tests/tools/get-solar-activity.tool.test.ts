@@ -4,7 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   F107Observation,
@@ -14,7 +14,7 @@ import type {
   XrayFlare,
   XrayFlux,
 } from '@/services/space-weather/types.js';
-import { PUBLISHED_FLARE_CLASSES } from '../fixtures/swpc-xray-flares.js';
+import { PUBLISHED_FLARE_CLASSES, SWPC_PEAKLESS_FLARE } from '../fixtures/swpc-xray-flares.js';
 
 vi.mock('@/services/space-weather/space-weather-service.js', () => ({
   getSpaceWeatherService: vi.fn(),
@@ -792,6 +792,138 @@ describe('getSolarActivity recentFlares (#31)', () => {
     expect(() => getSolarActivity.input.parse({ flare_hours: 0 })).toThrow();
     expect(() => getSolarActivity.input.parse({ flare_hours: 169 })).toThrow();
     expect(() => getSolarActivity.input.parse({ flare_hours: 1.5 })).toThrow();
+  });
+});
+
+/**
+ * A completed flare SWPC published with no recorded peak (#45). The service maps the
+ * fixture's null `max_time` / `max_class` / `max_xrlong` to null peak fields, so the
+ * tool sees this record; a peakless flare in the window used to fail output validation
+ * and take every other feed's data down with it.
+ */
+describe('getSolarActivity flare with no recorded peak (#45)', () => {
+  const peaklessFlare: XrayFlare = {
+    beginTime: SWPC_PEAKLESS_FLARE.begin_time,
+    maxTime: null,
+    endTime: SWPC_PEAKLESS_FLARE.end_time,
+    beginClass: SWPC_PEAKLESS_FLARE.begin_class,
+    maxClass: null,
+    endClass: SWPC_PEAKLESS_FLARE.end_class,
+    peakFluxWm2: null,
+    satellite: SWPC_PEAKLESS_FLARE.satellite,
+  };
+
+  /** The rendered line for the peakless flare. */
+  const PEAKLESS_LINE =
+    '- **No recorded peak** | began 2026-09-29T07:57:00Z as B3.0 | decayed 2026-09-29T12:57:00Z to B3.7 | GOES-18';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function textOf(result: Awaited<ReturnType<typeof runToolContract>>): string {
+    return (result.content?.[0] as { text?: string } | undefined)?.text ?? '';
+  }
+
+  it('answers a window that covers a peakless flare, with its peak fields null', async () => {
+    vi.setSystemTime(new Date('2026-09-29T14:00:00Z'));
+    useSvc({
+      getXrayFlares: vi
+        .fn()
+        .mockResolvedValue([
+          peaklessFlare,
+          makeFlare(1, { maxClass: 'C1.2', peakFluxWm2: 1.2e-6 }),
+        ]),
+    });
+
+    const result = await runToolContract(getSolarActivity, { flare_hours: 168 });
+
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const { recentFlares } = result.structuredContent as {
+      recentFlares: Record<string, unknown>[];
+    };
+    expect(recentFlares).toHaveLength(2);
+    expect(recentFlares[0]).toEqual({
+      beginTime: '2026-09-29T07:57:00Z',
+      maxTime: null,
+      endTime: '2026-09-29T12:57:00Z',
+      beginClass: 'B3.0',
+      maxClass: null,
+      endClass: 'B3.7',
+      peakFluxWm2: null,
+      rScale: null,
+      satellite: 18,
+    });
+    // The peaked flare beside it is untouched.
+    expect(recentFlares[1]).toMatchObject({ maxClass: 'C1.2', rScale: 0 });
+  });
+
+  it('answers a window whose only flare is peakless', async () => {
+    vi.setSystemTime(new Date('2026-09-29T14:00:00Z'));
+    useSvc({ getXrayFlares: vi.fn().mockResolvedValue([peaklessFlare]) });
+
+    const result = await runToolContract(getSolarActivity, { flare_hours: 24 });
+
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const structured = result.structuredContent as {
+      recentFlares: { rScale: number | null }[];
+      notice?: string;
+    };
+    expect(structured.recentFlares).toHaveLength(1);
+    expect(structured.recentFlares[0]!.rScale).toBeNull();
+    expect(structured.notice).toBeUndefined();
+    expect(textOf(result)).toContain(PEAKLESS_LINE);
+  });
+
+  it('renders a peakless flare without a literal null or a bare R level', () => {
+    const blocks = getSolarActivity.format!({
+      latestXray: null,
+      recentXray: [],
+      recentFlares: [{ ...peaklessFlare, rScale: null }],
+      f107: null,
+      probabilities: [],
+      latestProton: null,
+      sScale: 0,
+      sScaleText: 'No radiation storm',
+      activeRegions: [],
+      fetchedAt: '2026-09-29T14:00:00.000Z',
+    });
+    const text = (blocks[0] as { text: string }).text;
+    const line = text.split('\n').find((l) => l.includes('2026-09-29T07:57:00Z'));
+
+    expect(line).toBe(PEAKLESS_LINE);
+    expect(text).not.toMatch(/null|undefined|NaN/);
+    expect(line).not.toContain('**R');
+  });
+
+  it('names a peakless newest flare in the empty-window notice without a literal null', async () => {
+    vi.setSystemTime(new Date('2026-09-29T20:00:00Z'));
+    useSvc({
+      getXrayFlares: vi
+        .fn()
+        .mockResolvedValue([
+          makeFlare(0, { beginTime: '2026-09-28T04:00:00Z', maxClass: 'C2.5' }),
+          peaklessFlare,
+        ]),
+    });
+
+    const ctx = createMockContext({ errors: getSolarActivity.errors });
+    const result = await getSolarActivity.handler(
+      getSolarActivity.input.parse({ flare_hours: 6 }),
+      ctx,
+    );
+
+    expect(result.recentFlares).toHaveLength(0);
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toBe(
+      'No flare events began in the requested 6-hour window; the newest flare the feed carries began at 2026-09-29T07:57:00Z as B3.0, with no recorded peak.',
+    );
+    expect(notice).not.toMatch(/null|undefined/);
   });
 });
 
