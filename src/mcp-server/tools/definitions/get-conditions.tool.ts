@@ -382,7 +382,8 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       );
 
     const lines: string[] = [];
-    lines.push(`## Space Weather Conditions — ${escapeMarkdownInline(result.observedAt)} UTC`);
+    lines.push('## Space Weather Conditions');
+    lines.push(`**Observed:** ${escapeMarkdownInline(result.observedAt)} UTC`);
     lines.push('');
     lines.push(`**Summary:** ${escapeMarkdownInline(result.summary)}`);
     lines.push('');
@@ -391,7 +392,8 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
     );
     lines.push('');
     if (result.yesterday) {
-      lines.push(`### Yesterday (${escapeMarkdownInline(result.yesterday.date)}, assessed)`);
+      lines.push('### Yesterday');
+      lines.push(`**Date:** ${escapeMarkdownInline(result.yesterday.date)} (assessed)`);
       lines.push(...levelLines(result.yesterday));
     } else {
       lines.push('### Yesterday');

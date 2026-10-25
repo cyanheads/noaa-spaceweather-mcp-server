@@ -418,8 +418,9 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
         // Mark cancellations in the heading: they carry the cancelled product's own
         // type, so nothing else in the rendered record distinguishes them from one in force.
         const status = alert.cancelled ? ' · CANCELLED' : '';
+        lines.push(`### [${alert.productType}${status}]`);
         lines.push(
-          `### [${alert.productType}${status}] ${escapeMarkdownInline(alert.phenomenon)} — ${escapeMarkdownInline(alert.messageCode)} (${escapeMarkdownInline(alert.productId)})`,
+          `**Phenomenon:** ${escapeMarkdownInline(alert.phenomenon)} | **Message Code:** ${escapeMarkdownInline(alert.messageCode)} | **Product ID:** ${escapeMarkdownInline(alert.productId)}`,
         );
         // Spell out a scale-less product rather than leaving a bare "Level: 0", which
         // reads as "calm" when it actually means the product states no NOAA scale.

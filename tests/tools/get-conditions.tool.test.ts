@@ -517,7 +517,8 @@ describe('getConditions yesterday (#34)', () => {
     const result = await runWith(makeYesterdayPeriod());
     const section = yesterdaySection((getConditions.format!(result)[0] as { text: string }).text);
 
-    expect(section).toContain('### Yesterday (2026-06-03, assessed)');
+    expect(section).toContain('### Yesterday\n');
+    expect(section).toContain('**Date:** 2026-06-03 (assessed)');
     expect(section).toContain('**Geomagnetic (G):** G2 (scale 2) moderate');
     expect(section).toContain('**Radio Blackout (R):** R1 (scale 1) minor');
     expect(section).toContain('**Solar Radiation (S):** S0 (scale 0) —');

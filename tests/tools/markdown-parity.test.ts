@@ -50,6 +50,8 @@ function assertLiteral(
     if (token.children) pending.push(...token.children);
   }
   for (const value of values) expect(rendered).toContain(value);
+  // A repeated body value must not conceal a malformed copy in the heading.
+  expect(rendered).not.toContain('heading line\\\n');
   expect(JSON.stringify(output)).toBe(before);
 }
 
@@ -64,7 +66,7 @@ describe('upstream text renders literally under CommonMark', () => {
     const output = getAlerts.output.parse({
       alerts: [
         {
-          productId: `Product ${text}`,
+          productId: `Product heading line\n${text}`,
           messageCode: text,
           productType: 'Warning',
           level: 1,
@@ -82,17 +84,20 @@ describe('upstream text renders literally under CommonMark', () => {
       activeOnly: true,
       fetchedAt: '2026-10-25T00:00:00Z',
     });
-    assertLiteral(output, () => getAlerts.format!(output), [`Product ${text}`, multiline]);
+    assertLiteral(output, () => getAlerts.format!(output), [
+      `Product heading line\n${text}`,
+      multiline,
+    ]);
   });
 
   it('preserves scale descriptions and multiline forecast discussion', () => {
     const level = { scale: 1, label: 'G1', text: `Scale ${text}` };
     const output = getConditions.output.parse({
-      observedAt: '2026-10-25T00:00:00Z',
+      observedAt: `Observed heading line\n${text}`,
       currentKp: 5,
       currentGScale: 1,
       auroraLatitude: 'Aurora possible',
-      yesterday: null,
+      yesterday: { date: `Yesterday heading line\n${text}`, G: level, R: level, S: level },
       today: { G: level, R: level, S: level },
       forecast: [],
       summary: text,
@@ -104,6 +109,8 @@ describe('upstream text renders literally under CommonMark', () => {
       },
     });
     assertLiteral(output, () => getConditions.format!(output), [
+      `Observed heading line\n${text}`,
+      `Yesterday heading line\n${text}`,
       `Scale ${text}`,
       `Summary ${multiline}`,
       `Forecast ${multiline}`,
@@ -206,7 +213,7 @@ describe('upstream text renders literally under CommonMark', () => {
   it('preserves spacecraft identifiers in solar wind records', () => {
     const plasma = {
       timeTag: '2026-10-25T00:00:00Z',
-      source: `Plasma ${text}`,
+      source: `Plasma heading line\n${text}`,
       densityPerCm3: 1,
       speedKmS: 400,
       temperatureK: 10000,
@@ -238,6 +245,9 @@ describe('upstream text renders literally under CommonMark', () => {
       latestFeedMagTime: null,
       feedStalenessHours: null,
     });
-    assertLiteral(output, () => getSolarWind.format!(output), [`Plasma ${text}`, `Mag ${text}`]);
+    assertLiteral(output, () => getSolarWind.format!(output), [
+      `Plasma heading line\n${text}`,
+      `Mag ${text}`,
+    ]);
   });
 });

@@ -463,7 +463,8 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
   format: (result) => {
     const lines: string[] = [];
     const source = result.latestPlasma?.source ?? result.latestMag?.source;
-    lines.push(source ? `## Solar Wind (${escapeMarkdownInline(source)})` : '## Solar Wind');
+    lines.push('## Solar Wind');
+    if (source) lines.push(`**Source:** ${escapeMarkdownInline(source)}`);
     lines.push(`**Bz Status:** ${result.bzStatus}`);
     lines.push(
       `**Minimum Bz in window:** ${

@@ -512,7 +512,8 @@ describe('get_conditions yesterday through the real service (#34)', () => {
       R: { scale: 0, text: 'none', label: 'R0' },
       S: { scale: 0, text: 'none', label: 'S0' },
     });
-    expect(textOf(result)).toContain('### Yesterday (2026-09-16, assessed)');
+    expect(textOf(result)).toContain('### Yesterday\n');
+    expect(textOf(result)).toContain('**Date:** 2026-09-16 (assessed)');
     expect(textOf(result)).toContain('G1 (scale 1) minor');
   });
 
