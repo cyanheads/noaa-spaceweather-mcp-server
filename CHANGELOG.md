@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.3](changelog/0.3.x/0.3.3.md) — 2026-10-25
+
+NOAA text renders literally in Markdown, with mcp-ts-core 0.13.16 and updated dependencies.
+
 ## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-10-08
 
 Solar-activity calls no longer fail when SWPC publishes a flare with no recorded peak; on mcp-ts-core 0.13.14, numeric and boolean strings sent for number and boolean arguments are repaired, and tool errors end with a request ID.

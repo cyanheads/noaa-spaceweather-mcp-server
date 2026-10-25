@@ -1,6 +1,6 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-10-09 04:21:30
+Generated on: 2026-10-25 09:35:32
 
 ```text
 noaa-spaceweather-mcp-server/
@@ -177,6 +177,7 @@ noaa-spaceweather-mcp-server/
 │       ├── get-kp-index.tool.test.ts
 │       ├── get-solar-activity.tool.test.ts
 │       ├── get-solar-wind.tool.test.ts
+│       ├── markdown-parity.test.ts
 │       └── output-schemas.test.ts
 ├── .dockerignore
 ├── .env.example
