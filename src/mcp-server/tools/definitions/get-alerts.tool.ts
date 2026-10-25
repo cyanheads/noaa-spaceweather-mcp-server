@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
 import type { SpaceWeatherAlert } from '@/services/space-weather/types.js';
 
@@ -418,24 +419,24 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
         // type, so nothing else in the rendered record distinguishes them from one in force.
         const status = alert.cancelled ? ' · CANCELLED' : '';
         lines.push(
-          `### [${alert.productType}${status}] ${alert.phenomenon} — ${alert.messageCode} (${alert.productId})`,
+          `### [${alert.productType}${status}] ${escapeMarkdownInline(alert.phenomenon)} — ${escapeMarkdownInline(alert.messageCode)} (${escapeMarkdownInline(alert.productId)})`,
         );
         // Spell out a scale-less product rather than leaving a bare "Level: 0", which
         // reads as "calm" when it actually means the product states no NOAA scale.
-        const scale = alert.noaaScale ? ` (${alert.noaaScale})` : ' (no NOAA scale)';
+        const scale = alert.noaaScale
+          ? ` (${escapeMarkdownInline(alert.noaaScale)})`
+          : ' (no NOAA scale)';
         // The serial is what makes the "Cancel Serial Number:" and "Continuation of
         // Serial Number:" chains in the body navigable, so it rides here for clients
         // that render only content[].
-        const serial = alert.serialNumber ?? 'not stated';
+        const serial = escapeMarkdownInline(alert.serialNumber ?? 'not stated');
         lines.push(
-          `**Issued:** ${alert.issueDatetime} | **Level:** ${alert.level}${scale} | **Serial:** ${serial}`,
+          `**Issued:** ${escapeMarkdownInline(alert.issueDatetime)} | **Level:** ${alert.level}${scale} | **Serial:** ${serial}`,
         );
-        if (alert.validFrom) lines.push(`**Valid From:** ${alert.validFrom}`);
-        if (alert.validTo) lines.push(`**Valid To:** ${alert.validTo}`);
+        if (alert.validFrom) lines.push(`**Valid From:** ${escapeMarkdownInline(alert.validFrom)}`);
+        if (alert.validTo) lines.push(`**Valid To:** ${escapeMarkdownInline(alert.validTo)}`);
         lines.push('');
-        lines.push('```');
-        lines.push(alert.message);
-        lines.push('```');
+        lines.push(escapeMarkdownInline(alert.message));
       }
     }
     return [{ type: 'text', text: lines.join('\n') }];

@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
 import type { NoaaScaleEntry, NoaaScalesPeriod } from '@/services/space-weather/types.js';
 
@@ -199,7 +200,7 @@ function forecastCell(
     .filter((probability): probability is [number, string] => probability[0] !== null)
     .map(([percent, of]) => `${percent}% ${of}`)
     .join(', ');
-  return `${category}: ${[level, chances].filter(Boolean).join(' · ') || '—'}`;
+  return `${category}: ${escapeMarkdownInline([level, chances].filter(Boolean).join(' · ') || '—')}`;
 }
 
 /** The "G2 moderate geomagnetic storm" fragment for an in-progress storm, else null. */
@@ -365,7 +366,8 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
 
   format: (result) => {
     /** Normalize scale text: empty string or NOAA's literal "none" → "—". */
-    const scaleText = (t: string) => (t && t.toLowerCase() !== 'none' ? t : '—');
+    const scaleText = (t: string) =>
+      escapeMarkdownInline(t && t.toLowerCase() !== 'none' ? t : '—');
     /** The three G/R/S lines of one level-carrying period. */
     const levelLines = (period: typeof result.today) =>
       (
@@ -376,20 +378,20 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
         ] as const
       ).map(
         ([name, level]) =>
-          `- **${name}:** ${level.label} (scale ${level.scale}) ${scaleText(level.text)}`,
+          `- **${name}:** ${escapeMarkdownInline(level.label)} (scale ${level.scale}) ${scaleText(level.text)}`,
       );
 
     const lines: string[] = [];
-    lines.push(`## Space Weather Conditions — ${result.observedAt} UTC`);
+    lines.push(`## Space Weather Conditions — ${escapeMarkdownInline(result.observedAt)} UTC`);
     lines.push('');
-    lines.push(`**Summary:** ${result.summary}`);
+    lines.push(`**Summary:** ${escapeMarkdownInline(result.summary)}`);
     lines.push('');
     lines.push(
-      `**Current Kp:** ${result.currentKp} | **G-scale:** ${result.currentGScale} — ${result.auroraLatitude}`,
+      `**Current Kp:** ${result.currentKp} | **G-scale:** ${result.currentGScale} — ${escapeMarkdownInline(result.auroraLatitude)}`,
     );
     lines.push('');
     if (result.yesterday) {
-      lines.push(`### Yesterday (${result.yesterday.date}, assessed)`);
+      lines.push(`### Yesterday (${escapeMarkdownInline(result.yesterday.date)}, assessed)`);
       lines.push(...levelLines(result.yesterday));
     } else {
       lines.push('### Yesterday');
@@ -403,14 +405,14 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       lines.push('### 3-Day Forecast (starts today)');
       for (const day of result.forecast) {
         const cells = [
-          `${day.G.label} (scale ${day.G.scale}) ${scaleText(day.G.text)}`,
+          `${escapeMarkdownInline(day.G.label)} (scale ${day.G.scale}) ${scaleText(day.G.text)}`,
           forecastCell('R', day.R, [
             [day.R.minorProbPercent, 'R1–R2'],
             [day.R.majorProbPercent, 'R3+'],
           ]),
           forecastCell('S', day.S, [[day.S.probPercent, 'S1+']]),
         ];
-        lines.push(`**${day.date}:** ${cells.join(' | ')}`);
+        lines.push(`**${escapeMarkdownInline(day.date)}:** ${cells.join(' | ')}`);
       }
     }
     if (result.discussion) {
@@ -419,13 +421,13 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       lines.push(
         result.discussion.issued === null
           ? '_Issue time not stated in the product._'
-          : `_Issued ${result.discussion.issued}_`,
+          : `_Issued ${escapeMarkdownInline(result.discussion.issued)}_`,
       );
       for (const section of result.discussion.sections) {
         lines.push('');
-        lines.push(`**${section.topic}**`);
-        if (section.summary) lines.push(`_Past 24 h:_ ${section.summary}`);
-        if (section.forecast) lines.push(`_Forecast:_ ${section.forecast}`);
+        lines.push(`**${escapeMarkdownInline(section.topic)}**`);
+        if (section.summary) lines.push(`_Past 24 h:_ ${escapeMarkdownInline(section.summary)}`);
+        if (section.forecast) lines.push(`_Forecast:_ ${escapeMarkdownInline(section.forecast)}`);
         if (!section.summary && !section.forecast) lines.push('_No text in this section._');
       }
     }

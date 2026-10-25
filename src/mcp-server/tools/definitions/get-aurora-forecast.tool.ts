@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import {
   DARKNESS_STATES,
   type Darkness,
@@ -445,8 +446,8 @@ export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
   format: (result) => {
     const lines: string[] = [];
     lines.push('## Aurora Forecast (OVATION)');
-    lines.push(`**Observation Time:** ${result.observationTime}`);
-    lines.push(`**Forecast Valid:** ${result.forecastTime}`);
+    lines.push(`**Observation Time:** ${escapeMarkdownInline(result.observationTime)}`);
+    lines.push(`**Forecast Valid:** ${escapeMarkdownInline(result.forecastTime)}`);
     lines.push(`**Global Peak:** ${result.topAuroraPercent}% near ${result.topAuroraRegion}`);
     lines.push(`**Grid Points:** ${result.gridPointCount}`);
     if (result.localLookup) {

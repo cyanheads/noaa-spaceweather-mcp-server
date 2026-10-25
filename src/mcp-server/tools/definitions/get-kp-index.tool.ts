@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import {
   getSpaceWeatherService,
   kpToGScale,
@@ -150,7 +151,7 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
       lines.push('### Recent Observed Values');
       for (const r of result.observed) {
         lines.push(
-          `- ${r.timeTag}: Kp ${r.kp} | G-scale ${r.gScale} (${r.gLabel}) — ${r.auroraLatitude}`,
+          `- ${escapeMarkdownInline(r.timeTag)}: Kp ${r.kp} | G-scale ${r.gScale} (${r.gLabel}) — ${r.auroraLatitude}`,
         );
       }
     }
@@ -158,9 +159,9 @@ export const getKpIndex = tool('noaa_spaceweather_get_kp_index', {
       lines.push('');
       lines.push('### Forecast');
       for (const r of result.forecast) {
-        const scale = r.noaaScale ? ` (${r.noaaScale})` : '';
+        const scale = r.noaaScale ? ` (${escapeMarkdownInline(r.noaaScale)})` : '';
         lines.push(
-          `- ${r.timeTag}: Kp ${r.kp} | G-scale ${r.gScale} (${r.gLabel})${scale} [${r.observed}]`,
+          `- ${escapeMarkdownInline(r.timeTag)}: Kp ${r.kp} | G-scale ${r.gScale} (${r.gLabel})${scale} [${escapeMarkdownInline(r.observed)}]`,
         );
       }
     }

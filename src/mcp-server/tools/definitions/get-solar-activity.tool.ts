@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
 
 /**
@@ -99,7 +100,7 @@ function describePeak(f: {
     return '**No recorded peak**';
   }
   const flux = f.peakFluxWm2 === null ? '' : ` at ${f.peakFluxWm2} W/m² — **R${f.rScale}**`;
-  return `**${f.maxClass ?? 'Unrecorded class'}** peaked ${f.maxTime ?? 'at an unrecorded time'}${flux}`;
+  return `**${escapeMarkdownInline(f.maxClass ?? 'Unrecorded class')}** peaked ${escapeMarkdownInline(f.maxTime ?? 'at an unrecorded time')}${flux}`;
 }
 
 /**
@@ -317,6 +318,10 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       ),
   },
 
+  enrichmentTrailer: {
+    notice: { render: (value: string) => `> ${escapeMarkdownInline(value)}` },
+  },
+
   errors: [
     {
       reason: 'feed_unavailable',
@@ -497,7 +502,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('');
       lines.push('### Latest X-ray Flux');
       lines.push(
-        `**Time:** ${x.timeTag} | **Class:** ${x.flareClass} (${x.flareClassFull ?? 'no magnitude — flux below the A1 floor'}) | **Flux:** ${x.fluxWm2} (raw ${x.fluxWm2Value}) | **Satellite:** GOES-${x.satellite}`,
+        `**Time:** ${escapeMarkdownInline(x.timeTag)} | **Class:** ${x.flareClass} (${x.flareClassFull ?? 'no magnitude — flux below the A1 floor'}) | **Flux:** ${x.fluxWm2} (raw ${x.fluxWm2Value}) | **Satellite:** GOES-${x.satellite}`,
       );
     }
     if (result.recentXray.length > 0) {
@@ -505,7 +510,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('### X-ray (Past Hour)');
       for (const r of result.recentXray) {
         lines.push(
-          `- ${r.timeTag}: ${r.flareClass} class ${r.flareClassFull ?? '(no magnitude)'} — ${r.fluxWm2} (raw ${r.fluxWm2Value}) | GOES-${r.satellite}`,
+          `- ${escapeMarkdownInline(r.timeTag)}: ${r.flareClass} class ${r.flareClassFull ?? '(no magnitude)'} — ${r.fluxWm2} (raw ${r.fluxWm2Value}) | GOES-${r.satellite}`,
         );
       }
     }
@@ -514,7 +519,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('### Flare Events');
       for (const f of result.recentFlares) {
         lines.push(
-          `- ${describePeak(f)} | began ${f.beginTime} as ${f.beginClass} | decayed ${f.endTime ?? 'in progress'} to ${f.endClass ?? 'in progress'} | GOES-${f.satellite}`,
+          `- ${describePeak(f)} | began ${escapeMarkdownInline(f.beginTime)} as ${escapeMarkdownInline(f.beginClass)} | decayed ${escapeMarkdownInline(f.endTime ?? 'in progress')} to ${escapeMarkdownInline(f.endClass ?? 'in progress')} | GOES-${f.satellite}`,
         );
       }
     }
@@ -523,7 +528,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('');
       lines.push('### F10.7 cm Solar Radio Flux');
       lines.push(
-        `**Observed:** ${f.observedTime} (${f.reportingSchedule} report) | **Flux:** ${f.fluxSfu} sfu` +
+        `**Observed:** ${escapeMarkdownInline(f.observedTime)} (${escapeMarkdownInline(f.reportingSchedule)} report) | **Flux:** ${f.fluxSfu} sfu` +
           (f.ninetyDayMeanSfu != null ? ` | **90-day mean:** ${f.ninetyDayMeanSfu} sfu` : ''),
       );
     }
@@ -532,7 +537,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('');
       lines.push('### Proton Flux (≥10 MeV)');
       lines.push(
-        `**Time:** ${p.timeTag} | **Flux:** ${p.fluxPfu} pfu | **S${p.sScale}** | **Channel:** ${p.energy}`,
+        `**Time:** ${escapeMarkdownInline(p.timeTag)} | **Flux:** ${p.fluxPfu} pfu | **S${p.sScale}** | **Channel:** ${escapeMarkdownInline(p.energy)}`,
       );
     }
     if (result.probabilities.length > 0) {
@@ -540,7 +545,7 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
       lines.push('### Flare Probabilities (3-day forecast)');
       for (const p of result.probabilities) {
         lines.push(
-          `**${p.date}:** C=${p.cClassProbability}% | M=${p.mClassProbability}% | X=${p.xClassProbability}% | Proton=${p.protonEventProbability}%`,
+          `**${escapeMarkdownInline(p.date)}:** C=${p.cClassProbability}% | M=${p.mClassProbability}% | X=${p.xClassProbability}% | Proton=${p.protonEventProbability}%`,
         );
         // The deprecated *1Day fields repeat their date-neutral aliases, so the line
         // above already renders their values. One is rendered on its own only if it
@@ -565,16 +570,16 @@ export const getSolarActivity = tool('noaa_spaceweather_get_solar_activity', {
         // SWPC nulls every morphology field together on a spotless region.
         const spotless = r.spotClass === '' && r.magClass === '' && r.numberSpots === 0;
         lines.push(
-          `**AR${r.region}** — Location: ${r.location} | Latitude: ${r.latitude} | Observed: ${r.observedDate} | First observed: ${r.firstObserved}`,
+          `**AR${r.region}** — Location: ${escapeMarkdownInline(r.location)} | Latitude: ${escapeMarkdownInline(r.latitude)} | Observed: ${escapeMarkdownInline(r.observedDate)} | First observed: ${escapeMarkdownInline(r.firstObserved)}`,
         );
         const morphology = spotless
           ? 'Class: no spots (plage)'
-          : `Class: ${r.spotClass}/${r.magClass} | Spots: ${r.numberSpots}`;
+          : `Class: ${escapeMarkdownInline(r.spotClass)}/${escapeMarkdownInline(r.magClass)} | Spots: ${r.numberSpots}`;
         const area =
           r.areaMillionths === null ? 'none' : `${r.areaMillionths} millionths of the hemisphere`;
         lines.push(`  ${morphology} | Area: ${area}`);
         lines.push(
-          `  Flares on ${r.observedDate}: C=${r.cFlareCount} M=${r.mFlareCount} X=${r.xFlareCount}`,
+          `  Flares on ${escapeMarkdownInline(r.observedDate)}: C=${r.cFlareCount} M=${r.mFlareCount} X=${r.xFlareCount}`,
         );
         lines.push(
           `  Flare probability, following day: C=${r.cFlareProbability}% M=${r.mFlareProbability}% X=${r.xFlareProbability}% Proton=${r.protonProbability}%`,

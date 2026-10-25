@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getSpaceWeatherService } from '@/services/space-weather/space-weather-service.js';
 import type { SolarWindMag, SolarWindPlasma } from '@/services/space-weather/types.js';
 
@@ -245,6 +246,10 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       ),
   },
 
+  enrichmentTrailer: {
+    notice: { render: (value: string) => `> ${escapeMarkdownInline(value)}` },
+  },
+
   errors: [
     {
       reason: 'feed_unavailable',
@@ -458,12 +463,12 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
   format: (result) => {
     const lines: string[] = [];
     const source = result.latestPlasma?.source ?? result.latestMag?.source;
-    lines.push(source ? `## Solar Wind (${source})` : '## Solar Wind');
+    lines.push(source ? `## Solar Wind (${escapeMarkdownInline(source)})` : '## Solar Wind');
     lines.push(`**Bz Status:** ${result.bzStatus}`);
     lines.push(
       `**Minimum Bz in window:** ${
         result.bzMinInWindow != null && result.bzMinTimeTag != null
-          ? `${result.bzMinInWindow} nT at ${result.bzMinTimeTag}`
+          ? `${result.bzMinInWindow} nT at ${escapeMarkdownInline(result.bzMinTimeTag)}`
           : 'N/A'
       }`,
     );
@@ -473,7 +478,7 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     lines.push(
       `**Maximum speed in window:** ${
         result.speedMaxInWindow != null && result.speedMaxTimeTag != null
-          ? `${result.speedMaxInWindow} km/s at ${result.speedMaxTimeTag}`
+          ? `${result.speedMaxInWindow} km/s at ${escapeMarkdownInline(result.speedMaxTimeTag)}`
           : 'N/A'
       }`,
     );
@@ -490,10 +495,14 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
     );
 
     if (result.latestFeedPlasmaTime != null) {
-      lines.push(`**Newest plasma record in feed:** ${result.latestFeedPlasmaTime}`);
+      lines.push(
+        `**Newest plasma record in feed:** ${escapeMarkdownInline(result.latestFeedPlasmaTime)}`,
+      );
     }
     if (result.latestFeedMagTime != null) {
-      lines.push(`**Newest mag record in feed:** ${result.latestFeedMagTime}`);
+      lines.push(
+        `**Newest mag record in feed:** ${escapeMarkdownInline(result.latestFeedMagTime)}`,
+      );
     }
     if (result.feedStalenessHours != null) {
       lines.push(`**Feed staleness:** ${result.feedStalenessHours} h behind real time`);
@@ -503,7 +512,9 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       const p = result.latestPlasma;
       lines.push('');
       lines.push('### Latest Plasma');
-      lines.push(`**Time:** ${p.timeTag} | **Source:** ${p.source}`);
+      lines.push(
+        `**Time:** ${escapeMarkdownInline(p.timeTag)} | **Source:** ${escapeMarkdownInline(p.source)}`,
+      );
       lines.push(`- Speed: ${p.speedKmS != null ? `${p.speedKmS} km/s` : 'N/A'}`);
       lines.push(`- Density: ${p.densityPerCm3 != null ? `${p.densityPerCm3} n/cm³` : 'N/A'}`);
       lines.push(`- Temperature: ${p.temperatureK != null ? `${p.temperatureK} K` : 'N/A'}`);
@@ -512,7 +523,9 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       const m = result.latestMag;
       lines.push('');
       lines.push('### Latest Magnetic Field');
-      lines.push(`**Time:** ${m.timeTag} | **Source:** ${m.source}`);
+      lines.push(
+        `**Time:** ${escapeMarkdownInline(m.timeTag)} | **Source:** ${escapeMarkdownInline(m.source)}`,
+      );
       lines.push(`- Bz (GSM): ${m.bzGsm != null ? `${m.bzGsm} nT` : 'N/A'} ← storm driver`);
       lines.push(`- Bt (total): ${m.bt != null ? `${m.bt} nT` : 'N/A'}`);
       lines.push(
@@ -524,7 +537,7 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       lines.push('### Plasma Time Series');
       for (const r of result.plasma) {
         lines.push(
-          `- ${r.timeTag} (${r.source}): speed=${r.speedKmS != null ? `${r.speedKmS} km/s` : 'N/A'}, density=${r.densityPerCm3 != null ? `${r.densityPerCm3} n/cm³` : 'N/A'}, temp=${r.temperatureK != null ? `${r.temperatureK} K` : 'N/A'}`,
+          `- ${escapeMarkdownInline(r.timeTag)} (${escapeMarkdownInline(r.source)}): speed=${r.speedKmS != null ? `${r.speedKmS} km/s` : 'N/A'}, density=${r.densityPerCm3 != null ? `${r.densityPerCm3} n/cm³` : 'N/A'}, temp=${r.temperatureK != null ? `${r.temperatureK} K` : 'N/A'}`,
         );
       }
     }
@@ -533,7 +546,7 @@ export const getSolarWind = tool('noaa_spaceweather_get_solar_wind', {
       lines.push('### Mag Time Series');
       for (const r of result.mag) {
         lines.push(
-          `- ${r.timeTag} (${r.source}): Bz=${r.bzGsm != null ? `${r.bzGsm} nT` : 'N/A'}, Bt=${r.bt != null ? `${r.bt} nT` : 'N/A'}, Bx=${r.bxGsm != null ? `${r.bxGsm} nT` : 'N/A'}, By=${r.byGsm != null ? `${r.byGsm} nT` : 'N/A'}`,
+          `- ${escapeMarkdownInline(r.timeTag)} (${escapeMarkdownInline(r.source)}): Bz=${r.bzGsm != null ? `${r.bzGsm} nT` : 'N/A'}, Bt=${r.bt != null ? `${r.bt} nT` : 'N/A'}, Bx=${r.bxGsm != null ? `${r.bxGsm} nT` : 'N/A'}, By=${r.byGsm != null ? `${r.byGsm} nT` : 'N/A'}`,
         );
       }
     }
