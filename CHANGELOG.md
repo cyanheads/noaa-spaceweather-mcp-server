@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-28
+
+Publishes the noaa-spaceweather-guide Agent Skill as an MCP resource, moves to mcp-ts-core 0.13.18, and corrects the alert-feed retention and aurora lead-time descriptions.
+
 ## [0.3.3](changelog/0.3.x/0.3.3.md) — 2026-10-25
 
 NOAA text renders literally in Markdown, with mcp-ts-core 0.13.16 and updated dependencies.

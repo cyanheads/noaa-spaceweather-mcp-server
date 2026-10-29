@@ -1,6 +1,6 @@
 # noaa-spaceweather-mcp-server - Directory Structure
 
-Generated on: 2026-10-25 09:35:32
+Generated on: 2026-10-29 02:08:06
 
 ```text
 noaa-spaceweather-mcp-server/
@@ -27,6 +27,7 @@ noaa-spaceweather-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -39,6 +40,8 @@ noaa-spaceweather-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -136,6 +139,9 @@ noaa-spaceweather-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── noaa-spaceweather-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── mcp-server/
 │   │   ├── prompts/
@@ -164,10 +170,14 @@ noaa-spaceweather-mcp-server/
 │   │   └── swpc-xray-flares.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── bundle-agent-docs.test.ts
 │   ├── services/
 │   │   ├── feed-failure-contract.test.ts
 │   │   ├── solar-position.test.ts
 │   │   └── space-weather-service.test.ts
+│   ├── skills/
+│   │   └── published-skill-tree.test.ts
 │   └── tools/
 │       ├── __snapshots__/
 │       │   └── output-schemas.test.ts.snap
@@ -195,7 +205,9 @@ noaa-spaceweather-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
