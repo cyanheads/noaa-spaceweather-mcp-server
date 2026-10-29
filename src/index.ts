@@ -15,13 +15,9 @@ await createApp({
   tools: allToolDefinitions,
   resources: [],
   prompts: [],
+  skills: 'skills',
   instructions:
-    'NOAA Space Weather Prediction Center data server — all feeds are public and keyless.\n' +
-    '- Start with noaa_spaceweather_get_conditions for a quick status snapshot.\n' +
-    '- Use noaa_spaceweather_get_aurora_forecast with coordinates for "can I see the aurora?" queries.\n' +
-    '- Use noaa_spaceweather_get_solar_wind for Bz monitoring (southward Bz drives storms).\n' +
-    '- Use noaa_spaceweather_get_alerts for active SWPC watches/warnings.\n' +
-    'Feeds update frequently (solar wind ~1 min, aurora ~5 min, Kp 3-hour intervals).',
+    'NOAA Space Weather Prediction Center data server — all feeds are public and keyless.\n- Start with noaa_spaceweather_get_conditions for a quick status snapshot.\n- Use noaa_spaceweather_get_aurora_forecast with coordinates for "can I see the aurora?" queries.\n- Use noaa_spaceweather_get_solar_wind for Bz monitoring (southward Bz drives storms).\n- Use noaa_spaceweather_get_alerts for active SWPC watches/warnings.\n- The noaa-spaceweather-guide skill (skill://noaa-spaceweather-guide/SKILL.md) carries the gates for aurora timing in local time, geomagnetic latitude, Kp lag, radio-blackout checks, and reading alert products.\nFeeds update frequently (solar wind ~1 min, aurora ~5 min, Kp 3-hour intervals).',
   setup(core) {
     initSpaceWeatherService(core.config, core.storage);
   },
