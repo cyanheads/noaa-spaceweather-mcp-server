@@ -1,0 +1,33 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "noaa-spaceweather-mcp-server",
+  "version": "0.3.3",
+  "description": "Query NOAA SWPC space weather: geomagnetic storm scales, Kp index, aurora forecasts, solar wind, solar activity, and alerts via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/noaa-spaceweather-mcp-server#readme",
+  "repository": "git+https://github.com/cyanheads/noaa-spaceweather-mcp-server.git",
+  "license": "Apache-2.0",
+  "keywords": [
+    "noaa",
+    "space-weather",
+    "spaceweather",
+    "geomagnetic",
+    "aurora",
+    "kp-index",
+    "solar-wind",
+    "solar-activity",
+    "swpc",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "ai-agent"
+  ]
+}
