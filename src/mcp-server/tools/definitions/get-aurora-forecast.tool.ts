@@ -237,7 +237,7 @@ function buildVerdict(opts: {
 export const getAuroraForecast = tool('noaa_spaceweather_get_aurora_forecast', {
   title: 'Get Aurora Forecast',
   description:
-    'OVATION model aurora forecast for the next ~30–60 min: global grid of aurora probability ' +
+    'OVATION model aurora forecast for the next ~30–90 min: global grid of aurora probability ' +
     'percentages by latitude/longitude (1° resolution). With optional coordinates, returns the local ' +
     'aurora probability at the nearest grid point, the geomagnetic latitude those coordinates convert ' +
     'to, the minimum Kp and G level needed for aurora at that geomagnetic latitude, the sun’s ' +

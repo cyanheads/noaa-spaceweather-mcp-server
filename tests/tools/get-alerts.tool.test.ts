@@ -752,7 +752,7 @@ describe('getAlerts', () => {
     expect(result.alerts.some((a) => a.issueDatetime === hoursAgo35)).toBe(true);
   });
 
-  it('respects max_age_hours=720 to return all historical alerts', async () => {
+  it('respects max_age_hours=720 to return every alert in the feed window', async () => {
     const old = new Date(Date.now() - 500 * 60 * 60 * 1000).toISOString(); // 500h ago
     const alerts: SpaceWeatherAlert[] = [makeAlert({ productType: 'Warning', issueDatetime: old })];
     const svc = { getAlerts: vi.fn().mockResolvedValue(alerts) };

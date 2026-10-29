@@ -221,7 +221,7 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
     'returns informational summaries, expired notices, and cancellations. max_age_hours controls ' +
     'how far back to look for candidates (default 48 h) — under active_only=true it does not cut ' +
     'off a product whose validity end is still in the future, and under active_only=false it is a ' +
-    'literal age cutoff. The SWPC feed keeps all historical records and has no built-in expiry.',
+    'literal age cutoff. The SWPC feed holds roughly the last 30 days of products.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     active_only: z
@@ -236,7 +236,7 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
       .max(720)
       .default(48)
       .describe(
-        'How far back to look for products, in hours (default 48). The SWPC feed retains all historical records, so this bounds the candidate set rather than declaring what is current. Under active_only=true a product whose validity end is still in the future is returned even when its issue time falls outside this window — a multi-day Watch would otherwise disappear while a day it forecasts a storm for is still running. Under active_only=false it is literal and cuts at exactly the requested age.',
+        'How far back to look for products, in hours (default 48). The SWPC feed holds roughly the last 30 days of products, so this bounds the candidate set rather than declaring what is current. Under active_only=true a product whose validity end is still in the future is returned even when its issue time falls outside this window — a multi-day Watch would otherwise disappear while a day it forecasts a storm for is still running. Under active_only=false it is literal and cuts at exactly the requested age.',
       ),
   }),
   output: z.object({
