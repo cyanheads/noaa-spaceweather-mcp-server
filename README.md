@@ -35,7 +35,7 @@ Space weather from NOAA's Space Weather Prediction Center: geomagnetic storms, K
 
 | Tool | Description |
 |:-----|:------------|
-| `noaa_spaceweather_get_conditions` | Current space-weather snapshot: NOAA R/S/G storm scales for yesterday, today, and the 3-day forecast, latest Kp, a plain-language status summary, and optionally SWPC's forecast discussion explaining the forecast |
+| `noaa_spaceweather_get_conditions` | Latest R/S/G observations, rolling 24-hour maxima, three-day forecast, latest Kp, and an optional SWPC forecast discussion |
 | `noaa_spaceweather_get_kp_index` | Planetary K-index (0–9) — recent observed 3-hour values with G-scale equivalents and aurora-latitude guidance, plus 3-day forecast |
 | `noaa_spaceweather_get_aurora_forecast` | OVATION model aurora forecast: global probability grid, optional local lookup by coordinates with a daylight-aware go/no-go verdict and a poleward horizon reading |
 | `noaa_spaceweather_get_solar_wind` | Real-time solar wind from the active L1 spacecraft: speed, proton density, temperature, and the critical Bz component with the window's most southward reading — explains why current geomagnetic conditions exist |
@@ -47,7 +47,7 @@ Space weather from NOAA's Space Weather Prediction Center: geomagnetic storms, K
 ### `noaa_spaceweather_get_conditions` <sub>tool</sub>
 
 - `include_discussion` (bool, default false) is the only input; one call composes the `noaa-scales.json` and `noaa-planetary-k-index.json` feeds, plus the `discussion.txt` product when the discussion is requested
-- Returns current Kp with its G-scale equivalent and aurora-latitude guidance, today's observed R/S/G levels, `yesterday` (the previous UTC day's assessed levels, null when the feed carries none), and SWPC's 3-day forecast starting today — forecast R and S carry probabilities rather than levels, and a null level means none was forecast, not level 0
+- `today` holds the latest observed R/S/G levels. `yesterday` holds the rolling 24-hour observed maxima with SWPC’s date stamp, or null when unavailable. An unissued latest level or forecast G has null `scale`, `text`, and `label`. Forecast R/S can carry probabilities. The three-day forecast starts on the current UTC date. The latest Kp comes with its G-scale equivalent and aurora-latitude guidance.
 - With `include_discussion`, the forecaster-written Forecast Discussion split into its topic sections (Solar Activity, Energetic Particle, Solar Wind, Geospace), each with its 24-hour summary and 3-day forecast text
 
 ---
@@ -85,7 +85,7 @@ Space weather from NOAA's Space Weather Prediction Center: geomagnetic storms, K
 
 ### `noaa_spaceweather_get_alerts` <sub>tool</sub>
 
-- `active_only` (default true) keeps in-force Warnings/Watches/Alerts, dropping cancelled and superseded products, Summaries, and products whose validity has ended. `max_age_hours` (1–720, default 48) bounds how far back candidates reach — under `active_only` a product whose validity end is still ahead survives it; otherwise it is a literal age cutoff
+- `active_only` (default true) returns in-force Warnings, Watches, and Alerts. It drops cancellations and their targets, superseded Watches, older links in explicit Alert continuation chains, Summaries, and expired products. `max_age_hours` (1–720, default 48) bounds the lookback. An active product with a future validity end can survive that cutoff. Set `active_only: false` for the complete history within the window.
 - Each record carries product type, NOAA scale and level (0 means "no scale stated," not zero severity), serial number, parsed validity window, `cancelled`, and full message text. Under `active_only` the response also counts what it excluded, by reason, so an empty result reads as "quiet" or "everything was filtered"
 
 ---
@@ -153,7 +153,7 @@ No API key is needed — every SWPC feed is public. For Docker or a source build
 | `MCP_SESSION_MODE` | HTTP session mode. This project explicitly uses `stateless`; `auto` resolves to `stateful`. | `stateless` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424). | `info` |
-| `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
+| `LOGS_DIR` | Directory for log files (Node.js only). Relative paths resolve from the server package. | `<server-package>/logs` |
 | `LOG_TOOL_FAILURE_PAYLOADS` | Log each failed tool call's arguments and result, redacted by key name and capped at `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` (default `16384`). A secret inside a free-form value is not redacted. | `false` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend. | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
@@ -166,7 +166,7 @@ No domain-specific API keys are required. See [`.env.example`](./.env.example) f
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 
 - **Clone and install:**
 

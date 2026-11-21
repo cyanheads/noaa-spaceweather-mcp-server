@@ -4,7 +4,7 @@ description: Judgment for the noaa_spaceweather_* tools — turning SWPC Kp, sto
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Scope
@@ -28,7 +28,7 @@ Seeing aurora also needs a clear, dark sky. Cloud cover and moonlight are not he
 ## Identifiers
 
 - **Geomagnetic latitude** comes from `noaa_spaceweather_get_aurora_forecast` called with coordinates (`geomagneticLatitude`, `minKpRequired`). Every "aurora to ~N°" figure on the Kp and conditions tools is geomagnetic, and geographic latitude can differ by up to ~9° either way: Seattle (47.6°N) is 53.0° geomagnetic, London (51.5°N) 53.4°, Yakutsk (62.0°N) 53.4°. Never compare a geographic latitude against those figures; look the place up.
-- **Alert serials** link records. A message's `Continuation of Serial Number`, `Cancel Serial Number`, or `Extension to Serial Number` line names another record's `serialNumber` under the same `messageCode`. Records joined by continuation lines are one ongoing event: count and report it once, using the newest record. A serial can repeat: a `CORRECTED` record reuses the serial of the one it replaces, so take the newest by issue time.
+- **Alert serials** link products under the same `messageCode`. The active view excludes earlier reports that an explicit continuation uniquely identifies. In history mode, follow `Continuation of Serial Number` to group those reports yourself. A missing predecessor can lie outside the feed, and a corrected reissue can reuse a serial. Cancellation and extension lines also reference an earlier serial. Keep separate chains distinct even when they share a message code.
 - **Flare source.** Flare events carry no region. A ≥M5 flare's `SUMXM5` summary alert states its disk `Location` (for example N08W50); below M5, use the per-region C/M/X counts on `noaa_spaceweather_get_solar_activity`.
 
 ## Gates

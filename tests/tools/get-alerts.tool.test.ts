@@ -3,8 +3,8 @@
  * @module tests/tools/get-alerts.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpaceWeatherAlert } from '@/services/space-weather/types.js';
 
 vi.mock('@/services/space-weather/space-weather-service.js', () => ({
@@ -27,6 +27,7 @@ function makeAlert(overrides: Partial<SpaceWeatherAlert> = {}): SpaceWeatherAler
     cancelled: false,
     cancelsSerialNumber: null,
     cancelsOriginalIssueDatetime: null,
+    continuesSerialNumber: null,
     serialNumber: '5359',
     supersedes: false,
     issueDatetime: '2026-06-04T12:00:00Z',
@@ -45,6 +46,175 @@ function excludedTotal(enrichment: Record<string, unknown>): number {
   const counts = enrichment.exclusions as Record<string, number> | undefined;
   return counts ? Object.values(counts).reduce((sum, n) => sum + n, 0) : 0;
 }
+
+describe('alert continuation chains', () => {
+  const now = '2026-11-21T17:00:00Z';
+  function electronAlert(overrides: Partial<SpaceWeatherAlert>): SpaceWeatherAlert {
+    return makeAlert({
+      productType: 'Alert',
+      messageCode: 'ALTEF3',
+      productId: 'EF3A',
+      issueDatetime: '2026-11-15T05:16:57.317Z',
+      validTo: null,
+      ...overrides,
+    });
+  }
+  const chain = [
+    electronAlert({
+      serialNumber: '3778',
+      issueDatetime: '2026-11-17T08:48:14.700Z',
+      message: 'Continuation of Serial Number: 3777',
+      continuesSerialNumber: '3777',
+    }),
+    electronAlert({
+      serialNumber: '3777',
+      issueDatetime: '2026-11-16T06:28:16.430Z',
+      message: 'Continuation of Serial Number: 3776',
+      continuesSerialNumber: '3776',
+    }),
+    electronAlert({ serialNumber: '3776', message: 'Earlier alert' }),
+  ];
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(now));
+    useAlerts(chain);
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  function useAlerts(alerts: SpaceWeatherAlert[]) {
+    mockGetSpaceWeatherService.mockReturnValue({
+      getAlerts: vi.fn().mockResolvedValue(alerts),
+    } as never);
+  }
+
+  it('returns every linked record in the maximum history window with no exclusion trailer', async () => {
+    const result = await runToolContract(getAlerts, { active_only: false, max_age_hours: 720 });
+    expect(result.structuredContent).toMatchObject({
+      alerts: [{ serialNumber: '3778' }, { serialNumber: '3777' }, { serialNumber: '3776' }],
+    });
+    expect(result.structuredContent).not.toHaveProperty('exclusions');
+    expect(JSON.stringify(result.content)).toContain('Earlier alert');
+    expect(JSON.stringify(result.content)).not.toContain('**Excluded:**');
+  });
+
+  it('returns only the head of a three-record continuation chain and explains the exclusions', async () => {
+    const result = await runToolContract(getAlerts, { max_age_hours: 720 });
+    expect(result.structuredContent).toMatchObject({
+      totalCount: 1,
+      alerts: [{ serialNumber: '3778' }],
+      exclusions: { continued: 2 },
+    });
+    expect(JSON.stringify(result.content)).toContain('**Excluded:** 2 continued');
+    expect(JSON.stringify(result.content)).not.toContain('Earlier alert');
+  });
+
+  it('resolves independent same-code chains in unordered feed data', async () => {
+    useAlerts([
+      electronAlert({ serialNumber: '3774' }),
+      ...chain,
+      electronAlert({
+        serialNumber: '3775',
+        continuesSerialNumber: '3774',
+        issueDatetime: '2026-11-18T00:00:00Z',
+      }),
+      electronAlert({ serialNumber: '3780' }),
+    ]);
+    const result = await runToolContract(getAlerts, { max_age_hours: 720 });
+    expect(result.structuredContent).toMatchObject({
+      totalCount: 3,
+      alerts: [{ serialNumber: '3778' }, { serialNumber: '3775' }, { serialNumber: '3780' }],
+      exclusions: { continued: 3 },
+    });
+  });
+
+  it.each([
+    ['missing', []],
+    ['ambiguous', [electronAlert({ serialNumber: '3776' }), chain[2]!]],
+    [
+      'same-time',
+      [electronAlert({ serialNumber: '3776', issueDatetime: chain[1]!.issueDatetime })],
+    ],
+    ['later', [electronAlert({ serialNumber: '3776', issueDatetime: chain[0]!.issueDatetime })]],
+    ['cross-code', [electronAlert({ serialNumber: '3776', messageCode: 'ALTPX1' })]],
+    ['non-Alert', [electronAlert({ serialNumber: '3776', productType: 'Warning' })]],
+  ] as const)('keeps a continuation and any %s targets', async (_label, targets) => {
+    useAlerts([chain[1]!, ...targets]);
+    const result = await runToolContract(getAlerts, { max_age_hours: 720 });
+    expect(result.structuredContent).toMatchObject({ totalCount: 1 + targets.length });
+    expect(result.structuredContent).not.toHaveProperty('exclusions');
+  });
+
+  it('resolves a uniquely earlier serial even when it repeats after the continuation', async () => {
+    useAlerts([
+      electronAlert({ serialNumber: '3776', issueDatetime: chain[0]!.issueDatetime }),
+      chain[1]!,
+      chain[2]!,
+    ]);
+    const result = await runToolContract(getAlerts, { max_age_hours: 720 });
+    expect(result.structuredContent).toMatchObject({
+      totalCount: 2,
+      alerts: [
+        { serialNumber: '3776', issueDatetime: '2026-11-17T08:48:14.700Z' },
+        { serialNumber: '3777' },
+      ],
+      exclusions: { continued: 1 },
+    });
+  });
+
+  it('keeps replacement when the chain head expires, with agedOut and cancelledBySerial precedence', async () => {
+    useAlerts([
+      { ...chain[0]!, validTo: '2026-11-20T00:00:00Z' },
+      { ...chain[1]!, validTo: '2026-11-23T00:00:00Z' },
+      chain[2]!,
+      electronAlert({
+        serialNumber: '3780',
+        cancelled: true,
+        cancelsSerialNumber: '3777',
+        issueDatetime: '2026-11-21T00:00:00Z',
+      }),
+    ]);
+    const result = await runToolContract(getAlerts, { max_age_hours: 120 });
+    expect(result.structuredContent).toMatchObject({
+      totalCount: 0,
+      alerts: [],
+      exclusions: {
+        agedOut: 1,
+        cancelledBySerial: 1,
+        cancellationRecord: 1,
+        continued: 0,
+        validityElapsed: 1,
+      },
+    });
+    expect(JSON.stringify(result.content)).toContain('_No active alerts._');
+  });
+
+  it('uses continuation before elapsed validity even when the chain head was cancelled', async () => {
+    useAlerts([
+      chain[1]!,
+      { ...chain[2]!, validTo: '2026-11-16T00:00:00Z' },
+      electronAlert({
+        serialNumber: '3780',
+        cancelled: true,
+        cancelsSerialNumber: '3777',
+        issueDatetime: '2026-11-21T00:00:00Z',
+      }),
+    ]);
+    const result = await runToolContract(getAlerts, { max_age_hours: 720 });
+    expect(result.structuredContent).toMatchObject({
+      totalCount: 0,
+      exclusions: { continued: 1, cancelledBySerial: 1, cancellationRecord: 1, validityElapsed: 0 },
+    });
+  });
+
+  it('keeps the existing input limits', () => {
+    expect(getAlerts.input.safeParse({ max_age_hours: 721 }).success).toBe(false);
+    expect(getAlerts.input.safeParse({ max_age_hours: 0 }).success).toBe(false);
+    expect(getAlerts.input.safeParse({ active_only: 'false' }).success).toBe(false);
+  });
+});
 
 describe('getAlerts', () => {
   beforeEach(() => {
@@ -625,6 +795,7 @@ describe('getAlerts', () => {
       validityElapsed: 1,
       cancelledBySerial: 1,
       superseded: 1,
+      continued: 0,
     });
     // Every record the feed offered is either returned or attributed exactly once.
     expect(excludedTotal(enrichment) + result.totalCount).toBe(alerts.length);

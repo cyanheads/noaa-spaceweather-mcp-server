@@ -484,8 +484,8 @@ describe('forecast discussion text path rides the feed-failure contract', () => 
  * Key "-1" read through the real service and the full tool contract: the previous UTC
  * day survives output-schema validation and reaches both client surfaces (#34).
  */
-describe('get_conditions yesterday through the real service (#34)', () => {
-  const PREVIOUS_DAY = {
+describe('get_conditions observed maxima through the real service (#34, #49)', () => {
+  const MAXIMA = {
     DateStamp: '2026-09-16',
     TimeStamp: '12:00:00',
     G: { Scale: '1', Text: 'minor' },
@@ -493,11 +493,11 @@ describe('get_conditions yesterday through the real service (#34)', () => {
     S: { Scale: '0', Text: 'none', Prob: null },
   };
 
-  it('reports the assessed previous day on structuredContent and content[]', async () => {
+  it('distinguishes latest observations from rolling maxima on both surfaces', async () => {
     installFetch(SCALES_PATH, () =>
       Promise.resolve(
         Response.json({
-          '-1': PREVIOUS_DAY,
+          '-1': MAXIMA,
           ...(FEED_BODIES[SCALES_PATH] as Record<string, unknown>),
         }),
       ),
@@ -512,8 +512,14 @@ describe('get_conditions yesterday through the real service (#34)', () => {
       R: { scale: 0, text: 'none', label: 'R0' },
       S: { scale: 0, text: 'none', label: 'S0' },
     });
-    expect(textOf(result)).toContain('### Yesterday\n');
-    expect(textOf(result)).toContain('**Date:** 2026-09-16 (assessed)');
+    expect(getConditions.output.parse(result.structuredContent).today).toMatchObject({
+      G: { scale: 0, label: 'G0' },
+    });
+    expect(getConditions.output.shape.yesterday.description).toContain('rolling 24-hour');
+    expect(getConditions.output.shape.today.description).toContain('Latest observed');
+    expect(textOf(result)).toContain('### 24-Hour Observed Maxima\n');
+    expect(textOf(result)).toContain('**SWPC date stamp:** 2026-09-16');
+    expect(textOf(result)).toContain('### Latest Observed\n');
     expect(textOf(result)).toContain('G1 (scale 1) minor');
   });
 
@@ -523,7 +529,106 @@ describe('get_conditions yesterday through the real service (#34)', () => {
 
     expect(result.isError).toBeFalsy();
     expect((result.structuredContent as { yesterday: unknown }).yesterday).toBeNull();
-    expect(textOf(result)).toContain('carried no assessed levels for the previous UTC day');
+    expect(textOf(result)).toContain('24-hour observed maxima are unavailable');
+  });
+});
+
+describe('get_conditions periods and unissued scale levels (#47, #49)', () => {
+  const latest = {
+    DateStamp: '2026-10-21',
+    TimeStamp: '05:37:00',
+    G: { Scale: '0', Text: 'none' },
+    R: { Scale: '0', Text: 'none' },
+    S: { Scale: '0', Text: 'none' },
+  };
+  const forecast = {
+    ...latest,
+    DateStamp: '2026-10-22',
+    G: { Scale: '2', Text: 'moderate' },
+    R: { Scale: null, Text: null, MinorProb: '5', MajorProb: '1' },
+    S: { Scale: null, Text: null, Prob: '1' },
+  };
+
+  it.each([
+    ['G', 'Geomagnetic'],
+    ['R', 'Radio Blackout'],
+    ['S', 'Solar Radiation'],
+  ] as const)(
+    'returns the rest of the snapshot when the latest %s level is unissued',
+    async (category, name) => {
+      const result = await callWithFailure(
+        getConditions,
+        { include_discussion: true },
+        SCALES_PATH,
+        () =>
+          Promise.resolve(
+            Response.json({
+              '-1': { ...latest, DateStamp: '2026-10-20', G: { Scale: '1', Text: 'minor' } },
+              '0': { ...latest, [category]: { Scale: null } },
+              '2': forecast,
+              '3': { ...forecast, DateStamp: '2026-10-23', G: { Scale: null, Text: 'none' } },
+            }),
+          ),
+      );
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        observedAt: '2026-10-21T05:37:00Z',
+        currentKp: 2,
+        yesterday: { date: '2026-10-20', G: { label: 'G1', scale: 1 } },
+        today: { [category]: { scale: null, text: null, label: null } },
+        summary:
+          'Latest NOAA scale observations are incomplete. G2 moderate geomagnetic storm forecast for 2026-10-22.',
+        discussion: { sections: expect.any(Array) },
+        forecast: [
+          {
+            date: '2026-10-22',
+            G: { label: 'G2', scale: 2 },
+            R: { minorProbPercent: 5, majorProbPercent: 1 },
+            S: { probPercent: 1 },
+          },
+          {
+            date: '2026-10-23',
+            G: { scale: null, text: null, label: null },
+            R: { minorProbPercent: 5 },
+            S: { probPercent: 1 },
+          },
+        ],
+      });
+      expect(textOf(result)).toContain(`**${name} (${category}):** Not issued`);
+      expect(textOf(result)).toContain('G: Not issued | R: 5% R1–R2, 1% R3+ | S: 1% S1+');
+      expect(textOf(result)).toContain('### SWPC Forecast Discussion');
+      expect(attemptsFor(SCALES_PATH)).toBe(1);
+    },
+  );
+
+  it.each([
+    ['missing latest scale', { '0': { ...latest, G: { Text: 'none' } } }, 'G', '0'],
+    ['malformed latest scale', { '0': { ...latest, R: { Scale: '1oops' } } }, 'R', '0'],
+    ['fractional latest scale', { '0': { ...latest, S: { Scale: 1.5 } } }, 'S', '0'],
+    [
+      'malformed forecast scale',
+      { '0': latest, '2': { ...forecast, G: { Scale: 'bad' } } },
+      'G',
+      '2',
+    ],
+  ])('distinguishes %s from an unissued level', async (_name, body, category, key) => {
+    const result = await callWithFailure(getConditions, {}, SCALES_PATH, () =>
+      Promise.resolve(Response.json(body)),
+    );
+    const error = errorOf(result);
+    const hint = declaredRecovery(getConditions, 'feed_moved');
+
+    expect(error.message).toContain(category);
+    expect(error.message).toContain(`"${key}"`);
+    expect(error.data).toMatchObject({
+      reason: 'feed_moved',
+      path: SCALES_PATH,
+      retryable: false,
+      recovery: { hint },
+    });
+    expect(textOf(result)).toContain(`Recovery: ${hint}`);
+    expect(attemptsFor(SCALES_PATH)).toBe(1);
   });
 });
 

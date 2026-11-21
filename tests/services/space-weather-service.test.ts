@@ -331,6 +331,12 @@ describe('SpaceWeatherService.getAlerts', () => {
         message:
           'Space Weather Message Code: WARK04\r\nSerial Number: 5387\r\nIssue Time: 2026 Jul 15 0853 UTC\r\n\r\nEXTENDED WARNING: Geomagnetic K-index of 4 expected\nExtension to Serial Number: 5386\nNow Valid Until: 2026 Jul 15 1500 UTC\n',
       },
+      {
+        product_id: 'EF3A',
+        issue_datetime: '2026-07-08 05:08:00.000',
+        message:
+          'Space Weather Message Code: ALTEF3\r\nSerial Number: 3712\r\n\r\nALERT: Electron 2MeV Integral Flux exceeded 1000pfu\nContinuation of Serial Number: 3711\n',
+      },
     ];
     mockFetch.mockResolvedValue(makeResponse(rawAlerts));
 
@@ -338,10 +344,9 @@ describe('SpaceWeatherService.getAlerts', () => {
     const ctx = createMockContext();
     const alerts = await svc.getAlerts(ctx as never);
 
-    expect(alerts.map((a) => a.serialNumber)).toEqual(['2249', '2250', '3711', '5387']);
-    // Only the cancellation links a cancelled serial; a continuation or extension link
-    // means the product is still in force and must never read as one.
-    expect(alerts.map((a) => a.cancelsSerialNumber)).toEqual([null, '2249', null, null]);
+    expect(alerts.map((a) => a.serialNumber)).toEqual(['2249', '2250', '3711', '5387', '3712']);
+    expect(alerts.map((a) => a.cancelsSerialNumber)).toEqual([null, '2249', null, null, null]);
+    expect(alerts.map((a) => a.continuesSerialNumber)).toEqual([null, null, '3710', null, null]);
     expect(alerts[1]!.cancelsOriginalIssueDatetime).toBe('2026-07-12T14:11:00Z');
   });
 
@@ -1665,10 +1670,8 @@ describe('SpaceWeatherService.getNoaaScales normalization', () => {
   });
 
   /**
-   * Today's period (feed key "0") is an observation: SWPC populates a real `Scale`
-   * and `Text` on all three categories and leaves every probability null. This
-   * characterization pins that mapping — it is the half of the normalizer the
-   * forecast-period fix must leave byte-identical.
+   * The latest observed period (feed key "0") has issued levels for all three
+   * categories in this fixture. Probabilities are null.
    */
   it('maps the observed period straight through, scales as numbers and probabilities null', async () => {
     mockFetch.mockResolvedValue(
@@ -1709,7 +1712,7 @@ describe('SpaceWeatherService.getNoaaScales normalization', () => {
       majorProb: null,
     });
     expect(scales.forecast).toEqual([]);
-    // The feed's key set is not guaranteed; without key "-1" there is no previous day.
+    // The feed can omit the rolling maxima period.
     expect(scales.yesterday).toBeNull();
   });
 
@@ -1719,9 +1722,9 @@ describe('SpaceWeatherService.getNoaaScales normalization', () => {
         '0': {
           DateStamp: '2026-09-17',
           TimeStamp: '17:13:00',
-          R: { Scale: '2', Text: 'moderate', MinorProb: null, MajorProb: null },
-          S: { Scale: '1', Text: 'minor', Prob: null },
-          G: { Scale: '3', Text: 'strong' },
+          R: { Scale: ' 2e0 ', Text: 'moderate', MinorProb: null, MajorProb: null },
+          S: { Scale: 1, Text: 'minor', Prob: null },
+          G: { Scale: '+03.0', Text: 'strong' },
         },
       }),
     );
@@ -1773,11 +1776,10 @@ describe('SpaceWeatherService.getNoaaScales normalization', () => {
   });
 
   /**
-   * Key "-1" is the previous UTC day in key "0"'s shape — levels populated, probabilities
-   * null — captured live on 2026-09-22. Its TimeStamp matches key "0"'s: it is the feed's
-   * generation clock, not an observation time for that day.
+   * Key "-1" carries the rolling 24-hour observed maxima. Its TimeStamp matches
+   * key "0"'s feed generation clock.
    */
-  it('reads key "-1" into yesterday with its own date and levels (#34)', async () => {
+  it('reads key "-1" into yesterday with its date stamp and maximum levels (#34, #49)', async () => {
     mockFetch.mockResolvedValue(
       makeResponse({
         '-1': {

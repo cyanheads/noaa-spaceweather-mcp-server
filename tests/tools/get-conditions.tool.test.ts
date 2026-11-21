@@ -412,14 +412,7 @@ describe('getConditions forecast R/S probabilities (#23)', () => {
   });
 });
 
-/**
- * The three level-carrying surfaces — today's R/S/G and each forecast day's G — are
- * the ones whose schema declares a non-null `scale`. SWPC populates a real `Scale` on
- * all of them, so a null there is upstream answering without the shape the product is
- * documented to have, and the tool reports it as one instead of resolving it to level
- * 0 — the claim #23 removed from the forecast R/S.
- */
-describe('getConditions level-carrying scales are never inferred (#23)', () => {
+describe('getConditions unissued levels (#47)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
@@ -434,38 +427,47 @@ describe('getConditions level-carrying scales are never inferred (#23)', () => {
   }
 
   it.each(['G', 'R', 'S'] as const)(
-    "reports a null %s level on today's period as a shape break, not level 0",
+    'never substitutes level zero for an unissued latest %s level',
     async (category) => {
       const scales = makeScalesData();
       scales.today[category] = { ...scales.today[category], scale: null, text: null };
 
-      await expect(runWith(scales)).rejects.toMatchObject({
-        data: { reason: 'feed_moved', retryable: false },
-      });
+      const result = getConditions.output.parse(await runWith(scales));
+      expect(result.today[category]).toEqual({ scale: null, text: null, label: null });
+      expect(result.summary).toBe('Latest NOAA scale observations are incomplete.');
     },
   );
 
-  it('reports a null forecast G level as a shape break, not a quiet day', async () => {
+  it('keeps a wholly unissued latest period distinct from quiet conditions', async () => {
     const scales = makeScalesData();
-    scales.forecast[0]!.G = { ...scales.forecast[0]!.G, scale: null, text: null };
+    for (const category of ['G', 'R', 'S'] as const) {
+      scales.today[category] = { ...scales.today[category], scale: null, text: null };
+    }
 
-    await expect(runWith(scales)).rejects.toMatchObject({
-      data: { reason: 'feed_moved', retryable: false },
+    const result = await runWith(scales);
+    expect(result.summary).toBe('Latest NOAA scale observations are unavailable.');
+    expect(getConditions.format!(result)[0]).toMatchObject({
+      text: expect.stringContaining(result.summary),
     });
   });
 
-  it('names the period and category so the break is diagnosable', async () => {
-    const scales = makeScalesData();
-    scales.forecast[1]!.G = { ...scales.forecast[1]!.G, scale: null, text: null };
+  it('reports known active storms and an issued forecast alongside partial observations', async () => {
+    const scales = makeScalesData(0, 1, 0);
+    scales.today.G = { ...scales.today.G, scale: null, text: null };
+    scales.forecast[1]!.G = { ...scales.forecast[1]!.G, scale: 2, text: 'moderate' };
 
-    await expect(runWith(scales)).rejects.toMatchObject({
-      message: expect.stringContaining('2026-06-06'),
+    const result = await runWith(scales);
+    expect(result.summary).toBe(
+      'R1 minor radio blackout in progress. Latest NOAA scale observations are incomplete. G2 moderate geomagnetic storm forecast for 2026-06-06.',
+    );
+    expect(getConditions.format!(result)[0]).toMatchObject({
+      text: expect.stringContaining(result.summary),
     });
   });
 });
 
 /**
- * The previous UTC day's period as the service hands it over. Its `time` is the feed's
+ * The maxima period as the service hands it over. Its `time` is the feed's
  * generation clock — the same "22:38:00" key "0" carries on a live draw — so a value
  * derived from it would be a fabricated observation time.
  */
@@ -494,12 +496,15 @@ describe('getConditions yesterday (#34)', () => {
     return getConditions.handler(getConditions.input.parse({}), ctx);
   }
 
-  /** The Yesterday section of the rendered text, up to the Today heading. */
+  /** The maxima section of the rendered text, up to the latest levels. */
   function yesterdaySection(text: string): string {
-    return text.slice(text.indexOf('### Yesterday'), text.indexOf('### Today'));
+    return text.slice(
+      text.indexOf('### 24-Hour Observed Maxima'),
+      text.indexOf('### Latest Observed'),
+    );
   }
 
-  it('reports the previous UTC day in structuredContent, in the today shape plus its date', async () => {
+  it('reports the rolling 24-hour maxima and their date stamp', async () => {
     const result = await runWith(makeYesterdayPeriod());
 
     expect(result.yesterday).toEqual({
@@ -513,12 +518,12 @@ describe('getConditions yesterday (#34)', () => {
     expect(result.today.G.label).toBe('G0');
   });
 
-  it('renders every previous-day level in content[]', async () => {
+  it('renders every 24-hour maximum in content[]', async () => {
     const result = await runWith(makeYesterdayPeriod());
     const section = yesterdaySection((getConditions.format!(result)[0] as { text: string }).text);
 
-    expect(section).toContain('### Yesterday\n');
-    expect(section).toContain('**Date:** 2026-06-03 (assessed)');
+    expect(section).toContain('### 24-Hour Observed Maxima\n');
+    expect(section).toContain('**SWPC date stamp:** 2026-06-03');
     expect(section).toContain('**Geomagnetic (G):** G2 (scale 2) moderate');
     expect(section).toContain('**Radio Blackout (R):** R1 (scale 1) minor');
     expect(section).toContain('**Solar Radiation (S):** S0 (scale 0) —');
@@ -540,18 +545,18 @@ describe('getConditions yesterday (#34)', () => {
     expect(shifted.yesterday).toEqual(result.yesterday);
   });
 
-  it('reports null, on both surfaces, when the feed carries no previous-day period', async () => {
+  it('reports unavailable maxima on both surfaces when the feed omits the period', async () => {
     const result = await runWith(null);
 
     expect(result.yesterday).toBeNull();
     expect(getConditions.output.parse(result).yesterday).toBeNull();
     const section = yesterdaySection((getConditions.format!(result)[0] as { text: string }).text);
-    expect(section).toContain('carried no assessed levels for the previous UTC day');
+    expect(section).toContain('24-hour observed maxima are unavailable');
     expect(section).not.toMatch(/scale \d/);
   });
 
   it.each(['G', 'R', 'S'] as const)(
-    'reports null rather than level 0 when the previous day is missing its %s level, leaving today intact',
+    'reports the maxima as unavailable when their %s level is missing, leaving latest levels intact',
     async (category) => {
       const period = makeYesterdayPeriod();
       period[category] = { ...period[category], scale: null, text: null };

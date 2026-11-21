@@ -8,13 +8,9 @@
 /**
  * A single NOAA storm scale entry (R, S, or G) for one period.
  *
- * `scale`/`text` and the two probability fields are alternatives, not companions:
- * SWPC issues a *level* for a period it has observed and a *probability* for one it
- * is forecasting. Today's period carries R/S/G levels with null probabilities; a
- * forecast period carries a G level but only probabilities for R and S, with
- * `scale`/`text` null. A null `scale` therefore means "upstream issues no level for
- * this period", which is a different claim from level 0 — never resolve one to the
- * other (#23).
+ * SWPC publishes the latest observed R/S/G levels and forecasts G levels and R/S
+ * probabilities. A null level means no usable level was issued. Zero is an observed
+ * or forecast level in its own right.
  */
 export interface NoaaScaleEntry {
   /** Storm scale category: R (radio blackout), S (solar radiation), G (geomagnetic). */
@@ -66,13 +62,12 @@ export interface NoaaScalesData {
    * UTC days.
    */
   forecast: NoaaScalesPeriod[];
-  /** Today's observed/current values (key "0"). */
+  /** Latest observed R/S/G levels (key "0"). */
   today: NoaaScalesPeriod;
   /**
-   * The R/S/G levels SWPC assessed for the previous UTC day (key "-1"), or null when the
-   * feed carries no such key. Its `date` is that day; its `time` — and so `observedAt` —
-   * is the feed's generation clock, which moves in lockstep with every other period's,
-   * and says nothing about when that day's levels were observed.
+   * Rolling 24-hour observed R/S/G maxima (key "-1"), or null when the key is absent.
+   * The date stamp and feed generation clock do not identify the window boundaries
+   * or when a maximum was observed.
    */
   yesterday: NoaaScalesPeriod | null;
 }
@@ -402,11 +397,11 @@ export interface SpaceWeatherAlert {
    * The serial this record cancels ("Cancel Serial Number:"); null when it cancels
    * nothing. Resolves against {@link SpaceWeatherAlert.serialNumber} under this
    * record's own {@link SpaceWeatherAlert.messageCode} — serials are per-code counters,
-   * not global identifiers. The "Extension to Serial Number:" and "Continuation of
-   * Serial Number:" links mean the referenced product is still in force and never
-   * populate this.
+   * not global identifiers. Extension and continuation links never populate this.
    */
   cancelsSerialNumber: string | null;
+  /** Predecessor serial from a "CONTINUED ALERT:" record, or null when no link is stated. */
+  continuesSerialNumber: string | null;
   /** ISO 8601 issue datetime. */
   issueDatetime: string;
   /**

@@ -359,22 +359,16 @@ function fetchText(path: string, ctx: Context, userAgent: string): Promise<strin
 
 // ── Normalization helpers ───────────────────────────────────────────────────
 
-/**
- * Parse numeric string, returning null if the value is the fill value or NaN.
- *
- * The single numeric parse for the scales feed, levels and probabilities alike. SWPC
- * sends `null` for a period it issues no level for — every forecast period's R and S,
- * where the forecast is a probability instead — and that null is upstream saying "no
- * level here", a different claim from level 0. Returning null rather than 0 is what
- * keeps the two apart (#23); an unparseable value is not a level or a percentage
- * either and reads the same way.
- */
+/** Parse an optional measurement or probability, preserving missing values as null. */
 function parseNum(s: string | number | null | undefined): number | null {
   if (s == null) return null;
   const n = typeof s === 'string' ? parseFloat(s) : s;
   if (!Number.isFinite(n) || n === FILL_VALUE) return null;
   return n;
 }
+
+/** A complete decimal value, including the signed and scientific spellings accepted by parseFloat. */
+const DECIMAL_SCALE_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 /**
  * Normalize a SWPC time tag string to explicit ISO 8601 UTC (always ends in 'Z').
@@ -591,6 +585,10 @@ const SERIAL_RE = /^Serial\s+Number:\s*(\S+)/im;
 /** Matches the serial a cancellation names as its target. */
 const CANCEL_SERIAL_RE = /^Cancel\s+Serial\s+Number:\s*(\S+)/im;
 
+/** Only a continuation headline and its dedicated serial line establish the link. */
+const CONTINUED_ALERT_RE = /^CONTINUED[ \t]+ALERT:/im;
+const CONTINUED_SERIAL_RE = /^Continuation[ \t]+of[ \t]+Serial[ \t]+Number:[ \t]*(\S+)/im;
+
 /**
  * Matches the issue time a cancellation restates for its target. Only a cancellation
  * carries this line, so it never collides with the record's own "Issue Time:".
@@ -749,9 +747,8 @@ function parsePredictedDayEnd(message: string, issueDatetime: string): string | 
 
 /**
  * One category entry of a `noaa-scales.json` period. Which fields are present varies
- * by category and period: the observed period carries `Scale`/`Text` with null
- * probabilities, a forecast period carries `Scale: null`/`Text: null` on R and S with
- * the probabilities populated, and a G entry carries no probability field at all.
+ * by category and period. R and S forecast entries carry probabilities with null
+ * levels. The latest observations and forecast G may also have unissued levels.
  */
 interface RawScaleEntry {
   MajorProb?: string | number | null;
@@ -937,16 +934,35 @@ export class SpaceWeatherService {
 
   // ── NOAA Scales ────────────────────────────────────────────────────────
 
-  /** Fetch NOAA storm scales: yesterday's assessed levels, today, and the 3-day forecast. */
+  /** Fetch latest observed levels, rolling 24-hour observed maxima, and the 3-day forecast. */
   async getNoaaScales(ctx: Context): Promise<NoaaScalesData> {
     const path = '/products/noaa-scales.json';
     const raw = await fetchFeed<Record<string, RawScalesPeriod>>(path, ctx, this.userAgent);
 
-    // Levels and probabilities both go through parseNum, so an absent or unparseable
-    // value stays null instead of reading as level 0 or a 0% chance. SWPC names the
-    // probability fields per category: R carries MinorProb (R1–R2) and MajorProb
-    // (R3 or greater), S and G carry a single Prob.
-    const normalizePeriod = (r: RawScalesPeriod): NoaaScalesPeriod => ({
+    // These level slots carry either a number or an explicit null. Validate before
+    // permissive numeric normalization could collapse malformed data into a null or a level.
+    const requiredScale = (
+      value: unknown,
+      key: '0' | '1' | '2' | '3',
+      category: 'G' | 'R' | 'S',
+    ): number | null => {
+      if (value === null) return null;
+      const level =
+        typeof value === 'string' && DECIMAL_SCALE_RE.test(value.trim()) ? Number(value) : value;
+      if (typeof level === 'number' && Number.isInteger(level) && level >= 0 && level <= 5) {
+        return level;
+      }
+      const problem = value === undefined ? 'a missing' : 'an invalid';
+      throw feedFailure(
+        'feed_moved',
+        `SWPC scales feed has ${problem} ${category} Scale field in key "${key}".`,
+        path,
+      );
+    };
+    const normalizePeriod = (
+      r: RawScalesPeriod,
+      key?: '0' | '1' | '2' | '3',
+    ): NoaaScalesPeriod => ({
       date: r.DateStamp ?? '',
       time: r.TimeStamp ?? '',
       // The feed splits the period stamp across two Z-less fields; joined they are the
@@ -956,21 +972,21 @@ export class SpaceWeatherService {
         r.DateStamp && r.TimeStamp ? normalizeSwpcTime(`${r.DateStamp} ${r.TimeStamp}`) : '',
       G: {
         category: 'G',
-        scale: parseNum(r.G?.Scale),
+        scale: key === undefined ? parseNum(r.G?.Scale) : requiredScale(r.G?.Scale, key, 'G'),
         text: r.G?.Text ?? null,
         minorProb: parseNum(r.G?.Prob),
         majorProb: null,
       },
       R: {
         category: 'R',
-        scale: parseNum(r.R?.Scale),
+        scale: key === '0' ? requiredScale(r.R?.Scale, key, 'R') : parseNum(r.R?.Scale),
         text: r.R?.Text ?? null,
         minorProb: parseNum(r.R?.MinorProb),
         majorProb: parseNum(r.R?.MajorProb),
       },
       S: {
         category: 'S',
-        scale: parseNum(r.S?.Scale),
+        scale: key === '0' ? requiredScale(r.S?.Scale, key, 'S') : parseNum(r.S?.Scale),
         text: r.S?.Text ?? null,
         minorProb: parseNum(r.S?.Prob),
         majorProb: null,
@@ -981,21 +997,20 @@ export class SpaceWeatherService {
     // The feed answered, but not with the shape it is documented to have — the same
     // class of break as a path that no longer resolves, and equally unfixable by a retry.
     if (!today)
-      throw feedFailure('feed_moved', 'SWPC scales feed missing key "0" (today).', path, {
+      throw feedFailure('feed_moved', 'SWPC scales feed missing key "0" (latest observed).', path, {
         available: Object.keys(raw),
       });
 
-    // Key "-1" is optional: the feed's key set is not guaranteed, and a missing previous
-    // day takes nothing away from today or the forecast.
+    // Key "-1" is supplemental and may be absent.
     const yesterday = raw['-1'];
 
     return {
       yesterday: yesterday ? normalizePeriod(yesterday) : null,
-      today: normalizePeriod(today),
-      forecast: (['1', '2', '3'] as const)
-        .map((k) => raw[k])
-        .filter((p): p is RawScalesPeriod => p != null)
-        .map((p) => normalizePeriod(p)),
+      today: normalizePeriod(today, '0'),
+      forecast: (['1', '2', '3'] as const).flatMap((key) => {
+        const period = raw[key];
+        return period == null ? [] : [normalizePeriod(period, key)];
+      }),
     };
   }
 
@@ -1346,6 +1361,9 @@ export class SpaceWeatherService {
         serialNumber: message.match(SERIAL_RE)?.[1] ?? null,
         cancelsSerialNumber: message.match(CANCEL_SERIAL_RE)?.[1] ?? null,
         cancelsOriginalIssueDatetime: parseValidity(message, ORIGINAL_ISSUE_TIME_RE),
+        continuesSerialNumber: CONTINUED_ALERT_RE.test(message)
+          ? (message.match(CONTINUED_SERIAL_RE)?.[1] ?? null)
+          : null,
         supersedes: SUPERSEDES_RE.test(message),
         issueDatetime,
         message,

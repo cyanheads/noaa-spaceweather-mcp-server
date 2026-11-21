@@ -19,11 +19,17 @@ const ScaleSummarySchema = z
   })
   .describe('One NOAA scale level.');
 
+const NullableScaleSchema = z
+  .object({
+    scale: z.number().nullable().describe('Whole-number level 0–5, or null when unissued.'),
+    text: z.string().nullable().describe('Descriptor, or null when SWPC issued no level.'),
+    label: z.string().nullable().describe('Label, e.g. "G2", or null when SWPC issued no level.'),
+  })
+  .describe('An NOAA scale entry. An unissued level has all three fields null.');
+
 /**
- * SWPC issues no R or S *level* for a future day — it issues a probability. So the
- * forecast entries carry a nullable scale alongside the probabilities, while `today`
- * and `forecast[].G` keep {@link ScaleSummarySchema}: those do carry a real level.
- * The R/S asymmetry is upstream's — two probabilities for R, one for S.
+ * SWPC issues R/S probabilities for forecast days. The R/S asymmetry is upstream's:
+ * two probabilities for R, one for S.
  */
 const RadioForecastSchema = z
   .object({
@@ -62,20 +68,20 @@ const RadiationForecastSchema = z
 const ForecastPeriodSchema = z
   .object({
     date: z.string().describe('Forecast date, e.g. "2026-06-04".'),
-    G: ScaleSummarySchema.describe('Forecast G level.'),
+    G: NullableScaleSchema.describe('Forecast G level, or all null fields when unissued.'),
     R: RadioForecastSchema.describe('R outlook: a level, probabilities, or neither.'),
     S: RadiationForecastSchema.describe('S outlook: a level, a probability, or neither.'),
   })
   .describe('One forecast day.');
 
-const YesterdaySchema = z
+const ObservedMaximaSchema = z
   .object({
-    date: z.string().describe('Previous UTC day, e.g. "2026-06-03".'),
-    G: ScaleSummarySchema.describe('Assessed G level.'),
-    R: ScaleSummarySchema.describe('Assessed R level.'),
-    S: ScaleSummarySchema.describe('Assessed S level.'),
+    date: z.string().describe('SWPC date stamp, e.g. "2026-06-03".'),
+    G: ScaleSummarySchema.describe('Maximum observed G level over the past 24 hours.'),
+    R: ScaleSummarySchema.describe('Maximum observed R level over the past 24 hours.'),
+    S: ScaleSummarySchema.describe('Maximum observed S level over the past 24 hours.'),
   })
-  .describe('Levels SWPC assessed for the previous UTC day.');
+  .describe('Rolling 24-hour observed maxima.');
 
 const DiscussionSchema = z
   .object({
@@ -118,38 +124,18 @@ function scaleSummary(
   return { scale, text: entry.text ?? '', label: `${entry.category}${scale}` };
 }
 
-/**
- * Map a level-carrying entry onto {@link ScaleSummarySchema}, which declares `scale` as
- * a plain number: today's period and every forecast G entry do carry a real `Scale`
- * upstream.
- *
- * A null one is not resolved to 0. That is the claim #23 removed from the forecast R/S
- * — "level 0, no storm" is a different statement from "SWPC issued no level" — and it
- * would read the same way here, on a surface with no probability to fall back to. The
- * period instead reports the shape break it is, on the reason the tool already declares
- * for a feed that answers without its documented shape.
- */
-function observedScale(
-  entry: NoaaScaleEntry,
-  period: string,
-  fail: (message: string) => Error,
-): { label: string; scale: number; text: string } {
-  if (entry.scale === null)
-    throw fail(`SWPC scales feed issued no ${entry.category} level for the ${period} period.`);
-  return scaleSummary(entry, entry.scale);
+/** A latest observation or G forecast may carry no issued level. */
+function scaleOrUnissued(entry: NoaaScaleEntry) {
+  return entry.scale === null
+    ? { scale: null, text: null, label: null }
+    : scaleSummary(entry, entry.scale);
 }
 
 /**
- * The previous UTC day's assessed levels, from the period's `date` and its three
- * `Scale`/`Text` pairs only. `time`/`observedAt` are never read: on this key they are
- * the feed's generation clock, not an observation time.
- *
- * Null when the feed carries no such period, and also when it carries one missing a
- * level. Unlike today's period — the snapshot's core, where a missing level fails the
- * call as `feed_moved` — this one is supplementary, and a break in it must not take down
- * today and the forecast with it. Null is never resolved to level 0.
+ * The rolling 24-hour maxima are supplementary. Return null when a level is
+ * unavailable. The shared feed clock does not give the time of any maximum.
  */
-function assessedYesterday(period: NoaaScalesPeriod | null) {
+function observedMaxima(period: NoaaScalesPeriod | null) {
   if (!period) return null;
   const { G, R, S } = period;
   if (G.scale === null || R.scale === null || S.scale === null) return null;
@@ -214,12 +200,7 @@ function stormPhrase(entry: NoaaScaleEntry, phenomenon: string): string | null {
 export const getConditions = tool('noaa_spaceweather_get_conditions', {
   title: 'Get Space Weather Conditions',
   description:
-    'Current space-weather snapshot: NOAA R/S/G storm scales (the previous UTC day, today, and the 3-day forecast), latest Kp ' +
-    'index with its G-scale equivalent and aurora-visibility latitude, and a plain-language status ' +
-    'summary. Optionally includes the SWPC forecast discussion explaining what is driving the ' +
-    'forecast. The quickest way to answer "is anything happening right now?" — use before deciding ' +
-    'whether to drill into solar wind (noaa_spaceweather_get_solar_wind), aurora ' +
-    '(noaa_spaceweather_get_aurora_forecast), or alert details (noaa_spaceweather_get_alerts).',
+    'NOAA R/S/G storm-scale snapshot: latest observations, rolling 24-hour observed maxima, and the 3-day forecast. Includes latest Kp, its G-scale equivalent, aurora-visibility latitude, and a plain-language summary. Request the optional SWPC Forecast Discussion for context. For details, use noaa_spaceweather_get_solar_wind, noaa_spaceweather_get_aurora_forecast, or noaa_spaceweather_get_alerts.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: true },
   input: z.object({
     include_discussion: z
@@ -232,7 +213,7 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
   output: z.object({
     observedAt: z
       .string()
-      .describe('ISO 8601 UTC time of the scales data period, e.g. "2026-06-04T15:00:00Z".'),
+      .describe('ISO 8601 UTC stamp for the latest scales period, e.g. "2026-06-04T15:00:00Z".'),
     currentKp: z.number().describe('Latest observed planetary K-index (0–9).'),
     currentGScale: z.number().describe('G level (0–5) for currentKp.'),
     auroraLatitude: z
@@ -240,16 +221,22 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       .describe(
         'Aurora guidance for currentKp, e.g. "Aurora possible to ~55° geomagnetic latitude".',
       ),
-    yesterday: YesterdaySchema.nullable().describe(
-      'R/S/G levels assessed for the previous UTC day (a date, no time). Null when the feed lacks that period or a level; null never means level 0.',
+    yesterday: ObservedMaximaSchema.nullable().describe(
+      'R/S/G rolling 24-hour observed maxima with their SWPC date stamp. Null when the period or a level is unavailable.',
     ),
     today: z
       .object({
-        G: ScaleSummarySchema.describe("Today's G level."),
-        R: ScaleSummarySchema.describe("Today's R level."),
-        S: ScaleSummarySchema.describe("Today's S level."),
+        G: NullableScaleSchema.describe(
+          'Latest observed G level, or all null fields when unissued.',
+        ),
+        R: NullableScaleSchema.describe(
+          'Latest observed R level, or all null fields when unissued.',
+        ),
+        S: NullableScaleSchema.describe(
+          'Latest observed S level, or all null fields when unissued.',
+        ),
       })
-      .describe('Observed R/S/G levels for today.'),
+      .describe('Latest observed R/S/G levels.'),
     forecast: z
       .array(ForecastPeriodSchema)
       .describe('3-day scale forecast, oldest first; starts with today (the date of observedAt).'),
@@ -273,7 +260,7 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
     {
       reason: 'feed_moved',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'SWPC feed path returns a permanent 4xx (404, 410, 401, 403), or a feed answers without the shape it is documented to have — the scales feed no longer carrying its "0" (today) period, or the forecast discussion carrying no topic section. Fails in one attempt.',
+      when: 'SWPC feed returns a permanent 4xx, the scales feed lacks its latest observed period (key "0") or carries a malformed required scale field, or the forecast discussion has no topic section. Fails in one attempt.',
       retryable: false,
       recovery:
         'Retrying will not help — the SWPC feed path no longer resolves or no longer has the expected shape; the feed URL needs updating against SWPC current inventory.',
@@ -308,46 +295,45 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       stormPhrase(today.S, 'solar radiation storm'),
     ].filter((phrase): phrase is string => phrase !== null);
 
-    let summary: string;
-    if (parts.length > 0) {
-      summary =
-        parts.map((p, i) => (i === 0 ? p.charAt(0).toUpperCase() + p.slice(1) : p)).join('; ') +
-        ' in progress.';
-    } else {
-      // Check the forecast for upcoming elevated activity — the highest G-scale day.
-      // The descriptor rides along with the peak instead of being looked up by date
-      // afterwards: the series opens on today, so a date does not identify a period.
-      let peak: { date: string; scale: number; text: string | null } | null = null;
-      for (const p of scales.forecast) {
-        if (p.G.scale !== null && p.G.scale > (peak?.scale ?? 0)) {
-          peak = { date: p.date, scale: p.G.scale, text: p.G.text };
-        }
+    // Track the peak directly because forecast day one shares the observation date.
+    let peak: { date: string; scale: number; text: string | null } | null = null;
+    for (const p of scales.forecast) {
+      if (p.G.scale !== null && p.G.scale > (peak?.scale ?? 0)) {
+        peak = { date: p.date, scale: p.G.scale, text: p.G.text };
       }
-      // The series starts with today, so naming its date would read as a future day.
-      const when = peak === null || peak.date === today.date ? 'today' : peak.date;
-      summary =
-        peak === null
-          ? 'Quiet conditions — no significant storms active.'
-          : `Quiet now — ${joinWords([`G${peak.scale}`, peak.text?.toLowerCase(), 'geomagnetic storm'])} forecast for ${when}.`;
     }
-
-    /** A missing level is a feed shape break — see {@link observedScale}. */
-    const failOnMissingLevel = (message: string) => ctx.fail('feed_moved', message);
+    const outlook = peak
+      ? `${joinWords([`G${peak.scale}`, peak.text?.toLowerCase(), 'geomagnetic storm'])} forecast for ${peak.date === today.date ? 'today' : peak.date}.`
+      : '';
+    const unissued = [today.G, today.R, today.S].filter((entry) => entry.scale === null).length;
+    const summaryParts: string[] = [];
+    if (parts.length > 0) {
+      summaryParts.push(`${parts.join('; ')} in progress.`);
+    }
+    if (unissued === 3) summaryParts.push('Latest NOAA scale observations are unavailable.');
+    else if (unissued > 0) summaryParts.push('Latest NOAA scale observations are incomplete.');
+    if (summaryParts.length === 0) {
+      summaryParts.push(
+        outlook ? `Quiet now — ${outlook}` : 'Quiet conditions — no significant storms active.',
+      );
+    } else if (outlook) {
+      summaryParts.push(outlook);
+    }
 
     return {
       observedAt: today.observedAt,
       currentKp,
       currentGScale,
       auroraLatitude,
-      yesterday: assessedYesterday(scales.yesterday),
+      yesterday: observedMaxima(scales.yesterday),
       today: {
-        G: observedScale(today.G, 'today', failOnMissingLevel),
-        R: observedScale(today.R, 'today', failOnMissingLevel),
-        S: observedScale(today.S, 'today', failOnMissingLevel),
+        G: scaleOrUnissued(today.G),
+        R: scaleOrUnissued(today.R),
+        S: scaleOrUnissued(today.S),
       },
       forecast: scales.forecast.map((p) => ({
         date: p.date,
-        G: observedScale(p.G, `${p.date} forecast`, failOnMissingLevel),
+        G: scaleOrUnissued(p.G),
         R: {
           ...forecastLevel(p.R),
           minorProbPercent: p.R.minorProb,
@@ -359,15 +345,17 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
           probPercent: p.S.minorProb,
         },
       })),
-      summary,
+      summary: summaryParts.join(' '),
       discussion,
     };
   },
 
   format: (result) => {
     /** Normalize scale text: empty string or NOAA's literal "none" → "—". */
-    const scaleText = (t: string) =>
+    const scaleText = (t: string | null) =>
       escapeMarkdownInline(t && t.toLowerCase() !== 'none' ? t : '—');
+    const levelText = (level: typeof result.today.G) =>
+      `${escapeMarkdownInline(level.label ?? '')} (scale ${level.scale}) ${scaleText(level.text)}`;
     /** The three G/R/S lines of one level-carrying period. */
     const levelLines = (period: typeof result.today) =>
       (
@@ -378,7 +366,7 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
         ] as const
       ).map(
         ([name, level]) =>
-          `- **${name}:** ${escapeMarkdownInline(level.label)} (scale ${level.scale}) ${scaleText(level.text)}`,
+          `- **${name}:** ${level.scale === null ? 'Not issued' : levelText(level)}`,
       );
 
     const lines: string[] = [];
@@ -391,23 +379,22 @@ export const getConditions = tool('noaa_spaceweather_get_conditions', {
       `**Current Kp:** ${result.currentKp} | **G-scale:** ${result.currentGScale} — ${escapeMarkdownInline(result.auroraLatitude)}`,
     );
     lines.push('');
+    lines.push('### 24-Hour Observed Maxima');
     if (result.yesterday) {
-      lines.push('### Yesterday');
-      lines.push(`**Date:** ${escapeMarkdownInline(result.yesterday.date)} (assessed)`);
+      lines.push(`**SWPC date stamp:** ${escapeMarkdownInline(result.yesterday.date)}`);
       lines.push(...levelLines(result.yesterday));
     } else {
-      lines.push('### Yesterday');
-      lines.push('_The scales feed carried no assessed levels for the previous UTC day._');
+      lines.push('_24-hour observed maxima are unavailable._');
     }
     lines.push('');
-    lines.push('### Today');
+    lines.push('### Latest Observed');
     lines.push(...levelLines(result.today));
     if (result.forecast.length > 0) {
       lines.push('');
       lines.push('### 3-Day Forecast (starts today)');
       for (const day of result.forecast) {
         const cells = [
-          `${escapeMarkdownInline(day.G.label)} (scale ${day.G.scale}) ${scaleText(day.G.text)}`,
+          day.G.scale === null ? 'G: Not issued' : levelText(day.G),
           forecastCell('R', day.R, [
             [day.R.minorProbPercent, 'R1–R2'],
             [day.R.majorProbPercent, 'R3+'],

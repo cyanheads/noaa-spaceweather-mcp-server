@@ -104,6 +104,9 @@ exports[`tool output schemas > noaa_spaceweather_get_alerts keeps its advertised
         "cancelledBySerial": {
           "type": "number",
         },
+        "continued": {
+          "type": "number",
+        },
         "productType": {
           "type": "number",
         },
@@ -120,6 +123,7 @@ exports[`tool output schemas > noaa_spaceweather_get_alerts keeps its advertised
         "cancellationRecord",
         "cancelledBySerial",
         "superseded",
+        "continued",
         "validityElapsed",
       ],
       "type": "object",
@@ -340,13 +344,22 @@ exports[`tool output schemas > noaa_spaceweather_get_conditions keeps its advert
             "additionalProperties": false,
             "properties": {
               "label": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null",
+                ],
               },
               "scale": {
-                "type": "number",
+                "type": [
+                  "number",
+                  "null",
+                ],
               },
               "text": {
-                "type": "string",
+                "type": [
+                  "string",
+                  "null",
+                ],
               },
             },
             "required": [
@@ -462,13 +475,22 @@ exports[`tool output schemas > noaa_spaceweather_get_conditions keeps its advert
           "additionalProperties": false,
           "properties": {
             "label": {
-              "type": "string",
+              "type": [
+                "string",
+                "null",
+              ],
             },
             "scale": {
-              "type": "number",
+              "type": [
+                "number",
+                "null",
+              ],
             },
             "text": {
-              "type": "string",
+              "type": [
+                "string",
+                "null",
+              ],
             },
           },
           "required": [
@@ -482,13 +504,22 @@ exports[`tool output schemas > noaa_spaceweather_get_conditions keeps its advert
           "additionalProperties": false,
           "properties": {
             "label": {
-              "type": "string",
+              "type": [
+                "string",
+                "null",
+              ],
             },
             "scale": {
-              "type": "number",
+              "type": [
+                "number",
+                "null",
+              ],
             },
             "text": {
-              "type": "string",
+              "type": [
+                "string",
+                "null",
+              ],
             },
           },
           "required": [
@@ -502,13 +533,22 @@ exports[`tool output schemas > noaa_spaceweather_get_conditions keeps its advert
           "additionalProperties": false,
           "properties": {
             "label": {
-              "type": "string",
+              "type": [
+                "string",
+                "null",
+              ],
             },
             "scale": {
-              "type": "number",
+              "type": [
+                "number",
+                "null",
+              ],
             },
             "text": {
-              "type": "string",
+              "type": [
+                "string",
+                "null",
+              ],
             },
           },
           "required": [

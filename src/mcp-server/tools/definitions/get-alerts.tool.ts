@@ -17,7 +17,7 @@ import type { SpaceWeatherAlert } from '@/services/space-weather/types.js';
  * The window leads because it decides which records were candidates at all, and product
  * type follows because a Summary is never in force whatever its body says. Then the
  * reasons that name a *replacement* — this record is itself a cancellation, a later
- * record cancelled it, a later record superseded it — and only last the generic
+ * record cancelled it, a later record superseded or continued it — and only last the generic
  * "its stated end passed".
  *
  * That ordering is deliberate: a superseded Watch has usually outlived its own forecast
@@ -31,6 +31,7 @@ const EXCLUSION_REASONS = [
   'cancellationRecord',
   'cancelledBySerial',
   'superseded',
+  'continued',
   'validityElapsed',
 ] as const;
 
@@ -135,9 +136,43 @@ function resolveSuperseded(all: readonly SpaceWeatherAlert[]): Set<number> {
 }
 
 /**
+ * Resolve explicit same-code continuation links across the feed. The two earliest
+ * issue times per serial distinguish a unique earlier record from an ambiguous pair
+ * regardless of feed order. A newer record retaining the serial does not make an
+ * earlier link ambiguous.
+ */
+function resolveContinued(all: readonly SpaceWeatherAlert[]): Set<number> {
+  const alerts = all.flatMap((alert, index) => {
+    if (alert.productType !== 'Alert' || alert.cancelled) return [];
+    const issuedMs = Date.parse(alert.issueDatetime);
+    return Number.isFinite(issuedMs) ? [{ alert, index, issuedMs }] : [];
+  });
+  const bySerial = new Map<string, { index: number; firstMs: number; secondMs: number }>();
+  for (const { alert, index, issuedMs } of alerts) {
+    if (alert.serialNumber === null) continue;
+    const key = JSON.stringify([alert.messageCode, alert.serialNumber]);
+    const existing = bySerial.get(key);
+    if (!existing || issuedMs < existing.firstMs) {
+      bySerial.set(key, { index, firstMs: issuedMs, secondMs: existing?.firstMs ?? Infinity });
+    } else if (issuedMs < existing.secondMs) {
+      existing.secondMs = issuedMs;
+    }
+  }
+  const continued = new Set<number>();
+  for (const { alert, issuedMs } of alerts) {
+    if (alert.continuesSerialNumber === null) continue;
+    const target = bySerial.get(JSON.stringify([alert.messageCode, alert.continuesSerialNumber]));
+    if (target && target.firstMs < issuedMs && target.secondMs >= issuedMs) {
+      continued.add(target.index);
+    }
+  }
+  return continued;
+}
+
+/**
  * The first reason a record is not in force, or null when it is. A product is in force
  * until something in the feed says otherwise — a stated end that has passed, a
- * cancellation naming it, or a later product that supersedes it.
+ * cancellation naming it, a superseding Watch, or an explicitly linked continuation.
  */
 function exclusionReason(
   alert: SpaceWeatherAlert,
@@ -147,6 +182,7 @@ function exclusionReason(
     cutoffMs: number;
     cancelledBySerial: ReadonlySet<number>;
     superseded: ReadonlySet<number>;
+    continued: ReadonlySet<number>;
   },
 ): ExclusionReason | null {
   const end = endMs(alert);
@@ -165,6 +201,7 @@ function exclusionReason(
   if (alert.cancelled) return 'cancellationRecord';
   if (ctx.cancelledBySerial.has(index)) return 'cancelledBySerial';
   if (ctx.superseded.has(index)) return 'superseded';
+  if (ctx.continued.has(index)) return 'continued';
   if (end !== null && end < ctx.nowMs) return 'validityElapsed';
   return null;
 }
@@ -228,7 +265,7 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
       .boolean()
       .default(true)
       .describe(
-        'When true (default), return only in-force Warnings, Watches, and Alerts. Excluded: Summaries and unrecognized products; products whose validity end has passed; cancellation notices; any product a later cancellation names by serial; and all but the newest record carrying the "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT" line. Counts per reason ride in the exclusions enrichment field. Set false to return every product in the window, cancellations included (flagged by the cancelled field).',
+        'When true (default), return only in-force Warnings, Watches, and Alerts. Excluded: Summaries and unrecognized products; products whose validity end has passed; cancellation notices; products a later cancellation names by serial; all but the newest record carrying the "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT" line; and Alerts replaced by explicitly linked continuations. Counts per reason ride in the exclusions enrichment field. Set false to return every product in the window, cancellations included (flagged by the cancelled field).',
       ),
     max_age_hours: z
       .number()
@@ -284,17 +321,16 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
     const cutoffMs = nowMs - input.max_age_hours * 60 * 60 * 1000;
 
     let filtered: typeof all;
-    let excluded: Record<ExclusionReason, number> | undefined;
 
     if (input.active_only) {
-      // Both cross-record rules read the whole feed, not just the records the window
-      // admitted: a cancellation or a superseding Watch issued outside the caller's
-      // lookback still happened.
+      // A cancellation, supersession, or continuation outside the caller's window
+      // can still replace a record that passed the lookback or validity check.
       const filterCtx = {
         nowMs,
         cutoffMs,
         cancelledBySerial: resolveCancelledBySerial(all),
         superseded: resolveSuperseded(all),
+        continued: resolveContinued(all),
       };
       const counts = Object.fromEntries(EXCLUSION_REASONS.map((r) => [r, 0])) as Record<
         ExclusionReason,
@@ -306,16 +342,12 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
         if (reason) counts[reason] += 1;
         else filtered.push(alert);
       });
-      // Zeros across the board would tell a caller nothing it can act on; the window
-      // echo below already says filtering was applied.
-      if (filtered.length < all.length) excluded = counts;
       ctx.enrich({
         appliedWindowHours: input.max_age_hours,
         appliedCutoff: new Date(cutoffMs).toISOString(),
       });
-      // Written separately rather than spread in conditionally: enrich accumulates, and
-      // an absent field must stay absent rather than arrive as an explicit undefined.
-      if (excluded) ctx.enrich({ exclusions: excluded });
+      // The window echo already discloses filtering when every record passes.
+      if (filtered.length < all.length) ctx.enrich({ exclusions: counts });
     } else {
       // A literal history window — nothing is filtered by reason, so no counts.
       filtered = all.filter((a) => Date.parse(a.issueDatetime) >= cutoffMs);
@@ -324,13 +356,10 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
     if (filtered.length === 0) {
       // ctx.enrich.notice is last-wins, so the whole empty-state message is composed
       // once here rather than appended to across branches.
-      const excludedCount = excluded
-        ? Object.values(excluded).reduce((sum, n) => sum + n, 0)
-        : undefined;
       ctx.enrich.notice(
         input.active_only
-          ? excludedCount
-            ? `No active alerts, watches, or warnings — all ${excludedCount} products in the feed were excluded; see exclusions for the breakdown, or set active_only=false to see them.`
+          ? all.length > 0
+            ? `No active alerts, watches, or warnings — all ${all.length} products in the feed were excluded; see exclusions for the breakdown, or set active_only=false to see them.`
             : 'No active alerts, watches, or warnings. Set active_only=false to include summaries.'
           : 'No space weather products issued in the requested window.',
       );
@@ -374,6 +403,9 @@ export const getAlerts = tool('noaa_spaceweather_get_alerts', {
         cancellationRecord: z.number().describe('Cancellation notices.'),
         cancelledBySerial: z.number().describe('Named by a later cancellation.'),
         superseded: z.number().describe('Replaced by a newer superseding Watch.'),
+        continued: z
+          .number()
+          .describe('Replaced by an explicitly linked later Alert continuation.'),
         validityElapsed: z.number().describe('Validity end already passed.'),
       })
       .optional()
