@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-11-21 · ⚠️ Breaking
+
+Reports unissued NOAA scale levels and resolves continued alerts in the active view.
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-28
 
 Publishes the noaa-spaceweather-guide Agent Skill as an MCP resource, moves to mcp-ts-core 0.13.18, and corrects the alert-feed retention and aurora lead-time descriptions.
